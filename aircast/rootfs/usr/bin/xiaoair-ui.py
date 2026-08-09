@@ -15,6 +15,9 @@ from urllib.parse import urlparse
 
 import requests
 
+# Keep UI status polling from flooding addon logs.
+os.environ.setdefault("XIAOAIR_QUIET", "1")
+
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN")
 HA_API_URL = "http://supervisor/core/api"
 SUPERVISOR_URL = "http://supervisor"

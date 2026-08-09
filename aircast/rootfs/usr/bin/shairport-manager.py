@@ -54,8 +54,8 @@ class ShairportSyncManager:
             os.mkfifo(pipe_path)
         self.stream_pipes[entity_id] = pipe_path
 
-        # Prefer Avahi (host_dbus on HAOS). tinysvcmdns only if built in.
-        mdns_backend = os.environ.get("XIAOAIR_MDNS_BACKEND", "avahi")
+        # tinysvcmdns: works without host Avahi (HAOS usually has no Avahi on D-Bus).
+        mdns_backend = os.environ.get("XIAOAIR_MDNS_BACKEND", "tinysvcmdns")
 
         config_content = f"""
 general = {{
@@ -290,59 +290,19 @@ def _avahi_on_dbus() -> tuple[bool, str]:
         return False, str(err)
 
 
-def ensure_avahi() -> None:
-    """Use existing system D-Bus (host_dbus); start only avahi-daemon if needed."""
+def ensure_mdns() -> None:
+    """Avahi is optional; default mdns backend is tinysvcmdns."""
+    backend = os.environ.get("XIAOAIR_MDNS_BACKEND", "tinysvcmdns")
+    print(f"mDNS backend: {backend}")
+    if backend != "avahi":
+        return
+
     ok, detail = _avahi_on_dbus()
     if ok:
         print("✓ Avahi available on system D-Bus")
         return
     print(f"Avahi not on D-Bus yet: {detail}")
-
-    # With host_dbus, /run/dbus/system_bus_socket already exists. Starting a
-    # second dbus-daemon fails with "Address already in use". Only start Avahi.
-    os.makedirs("/var/run/avahi-daemon", exist_ok=True)
-    print("Starting avahi-daemon on existing system D-Bus...")
-    try:
-        subprocess.run(
-            ["avahi-daemon", "-c"],
-            check=False,
-            capture_output=True,
-            timeout=5,
-        )
-        # -k kills if already running; ignore failure
-        subprocess.run(
-            ["avahi-daemon", "-k"],
-            check=False,
-            capture_output=True,
-            timeout=5,
-        )
-    except Exception:  # noqa: BLE001
-        pass
-
-    try:
-        proc = subprocess.run(
-            ["avahi-daemon", "--daemonize", "--no-drop-root", "--no-rlimits"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if proc.returncode != 0:
-            print(
-                f"Warning: avahi-daemon start rc={proc.returncode}: "
-                f"{(proc.stderr or proc.stdout or '').strip()}"
-            )
-    except Exception as err:  # noqa: BLE001
-        print(f"Warning: avahi-daemon start failed: {err}")
-
-    time.sleep(1.5)
-    ok, detail = _avahi_on_dbus()
-    if ok:
-        print("✓ Avahi started on system D-Bus")
-    else:
-        print(
-            "✗ Avahi still unavailable — Shairport-Sync may exit. "
-            f"{detail}"
-        )
+    print("Hint: use tinysvcmdns (default) if host Avahi is unavailable")
 
 
 def main() -> None:
@@ -354,7 +314,7 @@ def main() -> None:
         print("ERROR: SUPERVISOR_TOKEN not found in environment")
         sys.exit(1)
 
-    ensure_avahi()
+    ensure_mdns()
 
     config = load_config()
     print(f"✓ Configuration loaded: {json.dumps(config, ensure_ascii=False)}")

@@ -128,6 +128,10 @@ def score_media_player(state: Dict[str, Any]) -> Tuple[int, str]:
     return score, entity_id
 
 
+def _verbose() -> bool:
+    return os.environ.get("XIAOAIR_QUIET") != "1"
+
+
 def discover_media_players() -> List[Dict[str, Any]]:
     states = [
         state
@@ -136,16 +140,19 @@ def discover_media_players() -> List[Dict[str, Any]]:
         and str(state.get("entity_id") or "").startswith("media_player.")
     ]
     ranked = sorted(states, key=score_media_player, reverse=True)
-    print(f"Discovered {len(ranked)} media_player entit(y/ies):", file=sys.stderr)
-    for state in ranked[:12]:
-        entity_id = state.get("entity_id")
-        attributes = state.get("attributes") if isinstance(state.get("attributes"), dict) else {}
-        friendly = attributes.get("friendly_name") or entity_id
-        score, _ = score_media_player(state)
-        print(
-            f"  [{score:>4}] {entity_id} ({friendly}) state={state.get('state')}",
-            file=sys.stderr,
-        )
+    if _verbose():
+        print(f"Discovered {len(ranked)} media_player entit(y/ies):", file=sys.stderr)
+        for state in ranked[:12]:
+            entity_id = state.get("entity_id")
+            attributes = (
+                state.get("attributes") if isinstance(state.get("attributes"), dict) else {}
+            )
+            friendly = attributes.get("friendly_name") or entity_id
+            score, _ = score_media_player(state)
+            print(
+                f"  [{score:>4}] {entity_id} ({friendly}) state={state.get('state')}",
+                file=sys.stderr,
+            )
     return ranked
 
 

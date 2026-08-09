@@ -8,10 +8,11 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Copy root filesystem
 COPY rootfs /
 
-# Setup base — use packaged shairport-sync (includes pipe/avahi/soxr).
-# Compiling from source made every HA update take a long time.
+# Build shairport-sync with tinysvcmdns so AirPlay advertising works on HAOS
+# without relying on host Avahi/D-Bus. HA installs pull this prebuilt image.
 ARG BUILD_ARCH=amd64
 ARG AIRCAST_VERSION="1.9.3"
+ARG SHAIRPORT_VERSION="4.3.7"
 RUN \
     apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -21,18 +22,37 @@ RUN \
         python3 \
         python3-requests \
         ffmpeg \
-        shairport-sync \
-        libconfig11 \
+        build-essential \
+        git \
+        autoconf \
+        automake \
+        libtool \
+        libpopt-dev \
+        libconfig-dev \
+        libssl-dev \
+        libsoxr-dev \
         libpopt0 \
-        libsoxr0 \
+        libconfig11 \
         libssl3 \
-        libnss-mdns \
-        libavahi-client3 \
-        avahi-daemon \
-        avahi-utils \
-        dbus \
-        libasound2-plugins \
+        libsoxr0 \
         xxd \
+    \
+    && git clone --depth 1 --branch "${SHAIRPORT_VERSION}" \
+         https://github.com/mikebrady/shairport-sync.git /tmp/shairport-sync \
+    && cd /tmp/shairport-sync \
+    && autoreconf -fi \
+    && ./configure \
+        --with-dummy \
+        --with-stdout \
+        --with-pipe \
+        --with-tinysvcmdns \
+        --with-ssl=openssl \
+        --with-soxr \
+        --with-metadata \
+        --sysconfdir=/etc \
+    && make -j"$(nproc)" \
+    && make install \
+    && shairport-sync -V \
     \
     && curl -fsSL -o /tmp/airconnect.zip \
       "https://github.com/philippe44/AirConnect/releases/download/${AIRCAST_VERSION}/AirConnect-${AIRCAST_VERSION}.zip" \
@@ -54,10 +74,25 @@ RUN \
     && chmod a+x /etc/s6-overlay/s6-rc.d/xiaoair-ui/run \
     && chmod a+x /etc/s6-overlay/s6-rc.d/xiaoair-ui/finish \
     \
-    && shairport-sync -V \
-    && ldd "$(command -v shairport-sync)" \
-    \
-    && apt-get purge -y --auto-remove unzip \
+    && apt-get purge -y --auto-remove \
+        unzip \
+        build-essential \
+        git \
+        autoconf \
+        automake \
+        libtool \
+        libpopt-dev \
+        libconfig-dev \
+        libssl-dev \
+        libsoxr-dev \
+    && apt-mark manual \
+        ffmpeg \
+        python3 \
+        python3-requests \
+        libpopt0 \
+        libconfig11 \
+        libssl3 \
+        libsoxr0 \
     && rm -fr \
         /tmp/* \
         /var/{cache,log}/* \
