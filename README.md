@@ -28,8 +28,8 @@ Same shape as Developer Tools → Actions → `media_player.play_media`.
 3. Install **XiaoAir**
 4. Configure (see below) and start
 
-Updates install packaged `shairport-sync` (no long source compile). After GHCR
-images are published, installs can be pull-only.
+Installs pull a prebuilt image from GHCR (`ghcr.io/yakamoz423/{arch}-xiaoair`),
+so updates should be fast (no on-device compile).
 
 ## Configuration
 
