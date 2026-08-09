@@ -10,7 +10,7 @@ import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -289,14 +289,29 @@ def play_media(entity_id: str, url: str, content_type: str) -> None:
     response.raise_for_status()
 
 
-def stop_media(entity_id: str) -> None:
-    response = requests.post(
-        f"{HA_API_URL}/services/media_player/media_stop",
-        headers=ha_headers(),
-        json={"entity_id": entity_id},
-        timeout=15,
+def stop_media(entity_id: str) -> Tuple[bool, str]:
+    """Xiaomi MIOT often rejects media_stop — try several services."""
+    payload = {"entity_id": entity_id}
+    attempts = (
+        "media_player/media_stop",
+        "media_player/media_pause",
+        "media_player/turn_off",
     )
-    response.raise_for_status()
+    errors: List[str] = []
+    for service in attempts:
+        try:
+            response = requests.post(
+                f"{HA_API_URL}/services/{service}",
+                headers=ha_headers(),
+                json=payload,
+                timeout=15,
+            )
+            if response.status_code < 400:
+                return True, service
+            errors.append(f"{service}: HTTP {response.status_code}")
+        except Exception as err:  # noqa: BLE001
+            errors.append(f"{service}: {err}")
+    return False, "; ".join(errors) if errors else "unknown"
 
 
 def start_test() -> Dict[str, Any]:
@@ -347,17 +362,15 @@ def stop_test() -> Dict[str, Any]:
         stop_ffmpeg()
         stop_file_server()
 
+        message = "Stopped"
         if entity_id:
-            try:
-                stop_media(entity_id)
-            except Exception as err:  # noqa: BLE001
-                clear_state()
-                return {
-                    "ok": False,
-                    "testing": False,
-                    "entity_id": entity_id,
-                    "error": f"media_stop failed: {err}",
-                }
+            ok, detail = stop_media(entity_id)
+            if ok:
+                message = f"Stopped via {detail}"
+            else:
+                # Local test server is already down; don't fail the UI button.
+                message = f"Test server stopped; speaker stop skipped ({detail})"
+                print(f"test stop soft-fail: {detail}", flush=True)
 
         clear_state()
         print(f"test stopped: {entity_id or '(none)'}", flush=True)
@@ -365,7 +378,7 @@ def stop_test() -> Dict[str, Any]:
             "ok": True,
             "testing": False,
             "entity_id": entity_id or None,
-            "message": "Stopped",
+            "message": message,
         }
 
 
