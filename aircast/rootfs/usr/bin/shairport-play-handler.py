@@ -63,10 +63,51 @@ def supervisor_token() -> Optional[str]:
     return load_json(ENV_FILE).get("SUPERVISOR_TOKEN")
 
 
+def list_host_ipv4() -> List[str]:
+    try:
+        out = subprocess.check_output(
+            ["ip", "-4", "-o", "addr", "show", "scope", "global"],
+            text=True,
+            timeout=3,
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    ips: List[str] = []
+    for line in out.splitlines():
+        parts = line.split()
+        if "inet" not in parts:
+            continue
+        cidr = parts[parts.index("inet") + 1]
+        ips.append(cidr.split("/")[0])
+    return ips
+
+
 def get_local_ip() -> str:
-    env = load_json(ENV_FILE)
-    if env.get("local_ip"):
-        return str(env["local_ip"])
+    """Prefer the LAN IP XiaoAI can reach (not HAOS secondary/virt NICs)."""
+    ips = list_host_ipv4()
+
+    def score(ip: str) -> int:
+        if ip.startswith(("172.30.", "172.17.", "127.")):
+            return -100
+        if ip.startswith("192.168.31."):
+            return 100
+        if ip.startswith("192.168.") and not ip.startswith("192.168.232."):
+            return 80
+        if ip.startswith("192.168.232."):
+            return 20
+        if ip.startswith("10."):
+            return 40
+        return 0
+
+    if ips:
+        best = sorted(ips, key=score, reverse=True)[0]
+        env_ip = load_json(ENV_FILE).get("local_ip")
+        if env_ip and str(env_ip) in ips and score(str(env_ip)) >= score(best):
+            return str(env_ip)
+        return best
+    env_ip = load_json(ENV_FILE).get("local_ip")
+    if env_ip:
+        return str(env_ip)
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.connect(("8.8.8.8", 80))
@@ -201,6 +242,12 @@ class Fanout:
                     handle.write(str(self._bytes))
             except OSError:
                 pass
+            # after_play_begins is unreliable on some Shairport builds — trigger here.
+            threading.Thread(
+                target=auto_play_media,
+                args=(self._entity_id,),
+                daemon=True,
+            ).start()
         for queue in clients:
             try:
                 queue.put_nowait(data)
@@ -395,6 +442,36 @@ def play_media(entity_id: str, stream_url: str, media_content_type: str) -> bool
     return ok
 
 
+_auto_play_lock = threading.Lock()
+
+
+def auto_play_media(entity_id: str) -> None:
+    """Send play_media once audio is encoded (idempotent)."""
+    with _auto_play_lock:
+        path = state_path(entity_id)
+        state = load_json(path)
+        if not state:
+            log(f"auto_play: no state yet for {entity_id}")
+            return
+        if state.get("play_media_sent"):
+            return
+        # Refresh URL with current best LAN IP (state may have been written early).
+        port = STREAM_PORT_BASE + int(state.get("port", 0))
+        stream_format = str(load_options().get("stream_format") or "mp3").lower()
+        stream_name = "live.mp3" if stream_format == "mp3" else "live.wav"
+        stream_url = f"http://{get_local_ip()}:{port}/{stream_name}"
+        media_content_type = str(state.get("media_content_type") or "music")
+        time.sleep(0.15)
+        if play_media(entity_id, stream_url, media_content_type):
+            state["play_media_sent"] = True
+            state["stream_url"] = stream_url
+            try:
+                with open(path, "w", encoding="utf-8") as handle:
+                    json.dump(state, handle)
+            except OSError:
+                pass
+
+
 def stop_media(entity_id: str) -> bool:
     """Xiaomi MIOT often rejects media_stop — try several services."""
     payload = {"entity_id": entity_id}
@@ -466,28 +543,15 @@ def handle_start(entity_id: str, pipe_path: str, port_offset: str) -> None:
 
 
 def handle_play(entity_id: str) -> None:
-    """after_play_begins: audio is flowing into the pipe — tell XiaoAI to pull."""
-    path = state_path(entity_id)
-    state = load_json(path)
-    if not state:
-        log(f"✗ play: missing state for {entity_id}")
-        return
-
-    stream_url = str(state.get("stream_url") or "")
-    media_content_type = str(state.get("media_content_type") or "music")
+    """Optional after_play_begins hook — usually already handled by auto_play_media."""
+    log(f"after_play_begins hook for {entity_id}")
     ready = audio_ready_path(entity_id)
-    log("Waiting for encoded audio before play_media...")
     deadline = time.time() + 12.0
     while time.time() < deadline:
         if os.path.exists(ready):
             break
         time.sleep(0.1)
-    else:
-        log("⚠ audio ready timeout — calling play_media anyway")
-
-    # Tiny settle so preroll has a few MP3 frames.
-    time.sleep(0.2)
-    play_media(entity_id, stream_url, media_content_type)
+    auto_play_media(entity_id)
 
 
 def handle_stop(entity_id: str) -> None:
