@@ -52,6 +52,12 @@ class ShairportSyncManager:
             f"/usr/bin/python3 /usr/bin/shairport-play-handler.py "
             f"stop {entity_id} >>/tmp/xiaoair-play.log 2>&1"
         )
+        # Trailing space required: Shairport appends the AirPlay volume dB value.
+        # No shell redirects here — they would swallow the appended dB argument.
+        volume_cmd = (
+            f"/usr/bin/python3 /usr/bin/shairport-play-handler.py "
+            f"volume {entity_id} "
+        )
 
         if os.path.exists(pipe_path):
             try:
@@ -65,6 +71,8 @@ class ShairportSyncManager:
         # tinysvcmdns: works without host Avahi (HAOS usually has no Avahi on D-Bus).
         mdns_backend = os.environ.get("XIAOAIR_MDNS_BACKEND", "tinysvcmdns")
 
+        # Keep PCM at full scale; phone volume keys drive XiaoAI via HA.
+        ignore_vol = "yes"
         config_content = f"""
 general = {{
     name = "{player_name}";
@@ -72,6 +80,8 @@ general = {{
     mdns_backend = "{mdns_backend}";
     port = {5000 + port_offset};
     interpolation = "soxr";
+    ignore_volume_control = "{ignore_vol}";
+    run_this_when_volume_is_set = "{volume_cmd}";
 }};
 
 sessioncontrol = {{

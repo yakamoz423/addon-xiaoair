@@ -526,11 +526,62 @@ def handle_stop(entity_id: str) -> None:
         log(f"✗ Error in stop handler: {err}")
 
 
+def airplay_volume_to_ha(airplay_db: float) -> Tuple[bool, float]:
+    """Map AirPlay dB (0..-30, -144 mute) -> (muted, volume 0..1)."""
+    if airplay_db <= -100:
+        return True, 0.0
+    # Clamp to AirPlay attenuator range.
+    level = (airplay_db + 30.0) / 30.0
+    if level < 0.0:
+        level = 0.0
+    if level > 1.0:
+        level = 1.0
+    return False, level
+
+
+def handle_volume(entity_id: str, airplay_db_raw: str) -> None:
+    """Forward iPhone volume keys to XiaoAI (PCM stays full-scale)."""
+    try:
+        airplay_db = float(airplay_db_raw)
+    except ValueError:
+        log(f"✗ volume: bad value {airplay_db_raw!r}")
+        return
+
+    muted, level = airplay_volume_to_ha(airplay_db)
+    log(f"volume airplay={airplay_db} dB -> ha={level:.3f} muted={muted}")
+
+    if muted:
+        ok, detail = call_service(
+            "media_player/volume_mute",
+            {"entity_id": entity_id, "is_volume_muted": True},
+        )
+        if ok:
+            log(f"✓ volume_mute ({detail})")
+            return
+        log(f"volume_mute failed: {detail}; falling back to volume_set 0")
+        level = 0.0
+
+    ok, detail = call_service(
+        "media_player/volume_set",
+        {"entity_id": entity_id, "volume_level": level},
+    )
+    if ok:
+        # Ensure unmuted when setting a real level.
+        if not muted and level > 0:
+            call_service(
+                "media_player/volume_mute",
+                {"entity_id": entity_id, "is_volume_muted": False},
+            )
+        log(f"✓ volume_set {level:.3f} ({detail})")
+    else:
+        log(f"✗ volume_set failed: {detail}")
+
+
 def main() -> None:
     if len(sys.argv) < 3:
         print(
-            "Usage: shairport-play-handler.py <start|play|stop|serve> "
-            "<entity_id> [pipe_path] [port]",
+            "Usage: shairport-play-handler.py <start|play|stop|serve|volume> "
+            "<entity_id> [pipe_path|airplay_db] [port]",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -547,6 +598,13 @@ def main() -> None:
         handle_play(entity_id)
     elif command == "stop":
         handle_stop(entity_id)
+    elif command == "volume":
+        # Shairport appends: ... volume <entity> >>log 2>&1 <db>
+        # After shell redirect parsing, argv is: volume entity <db>
+        if len(sys.argv) < 4:
+            log("volume command requires airplay dB argument")
+            sys.exit(1)
+        handle_volume(entity_id, sys.argv[3])
     elif command == "serve":
         if len(sys.argv) < 5:
             log("serve command requires pipe_path and port")
