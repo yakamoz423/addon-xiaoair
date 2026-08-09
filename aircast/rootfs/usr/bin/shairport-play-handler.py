@@ -1,230 +1,265 @@
 #!/usr/bin/env python3
 """
-Shairport-Sync Play Handler
-Handles audio streaming from Shairport-Sync to ESPHome via Home Assistant
-Called by Shairport-Sync when playback starts/stops
-"""
-import os
-import sys
-import json
-import asyncio
-import threading
-from pathlib import Path
-import requests
-from typing import Optional
-import subprocess
+Shairport play/stop hooks.
 
-SUPERVISOR_TOKEN = os.environ.get('SUPERVISOR_TOKEN')
-HA_API_URL = 'http://supervisor/core/api'
+Starts an HTTP audio stream from the Shairport pipe and calls
+media_player.play_media on the configured Home Assistant entity.
+"""
+from __future__ import annotations
+
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+from typing import Any, Dict, Optional
+
+import requests
+
+SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN")
+HA_API_URL = "http://supervisor/core/api"
+OPTIONS_FILE = "/data/options.json"
+STREAM_PORT_BASE = 7000
+
+
+def load_options() -> Dict[str, Any]:
+    try:
+        with open(OPTIONS_FILE, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def get_local_ip() -> str:
+    try:
+        import socket
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        local_ip = sock.getsockname()[0]
+        sock.close()
+        return local_ip
+    except Exception:  # noqa: BLE001
+        return "127.0.0.1"
+
+
+def state_path(entity_id: str) -> str:
+    return f"/tmp/shairport_state_{entity_id.replace('.', '_')}.json"
+
 
 class AudioStreamHandler:
-    """Handles streaming audio from pipe to ESPHome device"""
-    
-    def __init__(self, entity_id: str, pipe_path: str, port: int):
+    """Pipe -> ffmpeg HTTP stream -> HA media_player.play_media."""
+
+    def __init__(self, entity_id: str, pipe_path: str, port_offset: int):
         self.entity_id = entity_id
         self.pipe_path = pipe_path
-        self.port = port
-        self.stream_url = f"http://localhost:{7000 + port}/stream.wav"
+        self.port_offset = port_offset
+        self.port = STREAM_PORT_BASE + port_offset
+        self.options = load_options()
+        self.stream_format = str(self.options.get("stream_format") or "mp3").lower()
+        self.media_content_type = str(
+            self.options.get("media_content_type") or "music"
+        )
         self.ffmpeg_process: Optional[subprocess.Popen] = None
-        self.http_server_process: Optional[subprocess.Popen] = None
-        
-    def get_local_ip(self) -> str:
-        """Get the local IP address"""
-        try:
-            import socket
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            local_ip = s.getsockname()[0]
-            s.close()
-            return local_ip
-        except:
-            return "127.0.0.1"
-    
-    def start_http_server(self):
-        """Start simple HTTP server to serve the audio stream"""
-        port = 7000 + self.port
-        wav_file = f"/tmp/stream_{self.entity_id.replace('.', '_')}.wav"
-        
-        # Start FFmpeg to read from pipe and write to WAV file
-        ffmpeg_cmd = [
-            'ffmpeg',
-            '-f', 's16le',           # Input format: signed 16-bit little-endian PCM
-            '-ar', '44100',          # Sample rate: 44.1 kHz
-            '-ac', '2',              # Channels: stereo
-            '-i', self.pipe_path,    # Input: named pipe
-            '-f', 'wav',             # Output format: WAV
-            '-y',                    # Overwrite output
-            wav_file                 # Output file
-        ]
-        
-        print(f"Starting FFmpeg: {' '.join(ffmpeg_cmd)}", file=sys.stderr)
-        
+
+    @property
+    def stream_path(self) -> str:
+        return "live.mp3" if self.stream_format == "mp3" else "live.wav"
+
+    @property
+    def stream_url(self) -> str:
+        return f"http://{get_local_ip()}:{self.port}/{self.stream_path}"
+
+    def start_stream(self) -> None:
+        if self.stream_format == "wav":
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "warning",
+                "-f",
+                "s16le",
+                "-ar",
+                "44100",
+                "-ac",
+                "2",
+                "-i",
+                self.pipe_path,
+                "-f",
+                "wav",
+                "-content_type",
+                "audio/wav",
+                "-listen",
+                "1",
+                f"http://0.0.0.0:{self.port}/{self.stream_path}",
+            ]
+        else:
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "warning",
+                "-f",
+                "s16le",
+                "-ar",
+                "44100",
+                "-ac",
+                "2",
+                "-i",
+                self.pipe_path,
+                "-f",
+                "mp3",
+                "-content_type",
+                "audio/mpeg",
+                "-listen",
+                "1",
+                f"http://0.0.0.0:{self.port}/{self.stream_path}",
+            ]
+
+        print(f"Starting FFmpeg stream: {' '.join(ffmpeg_cmd)}", file=sys.stderr)
         self.ffmpeg_process = subprocess.Popen(
             ffmpeg_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
         )
-        
-        # Start simple HTTP server using Python
-        http_cmd = [
-            'python3', '-m', 'http.server',
-            str(port),
-            '--directory', '/tmp',
-            '--bind', '0.0.0.0'
-        ]
-        
-        print(f"Starting HTTP server on port {port}", file=sys.stderr)
-        
-        self.http_server_process = subprocess.Popen(
-            http_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        
-        # Give servers time to start
-        import time
-        time.sleep(1)
-    
-    def stop_servers(self):
-        """Stop FFmpeg and HTTP server"""
-        if self.ffmpeg_process:
+        time.sleep(0.5)
+
+    def stop_stream(self) -> None:
+        if not self.ffmpeg_process:
+            return
+        try:
+            os.killpg(self.ffmpeg_process.pid, signal.SIGTERM)
+        except Exception:  # noqa: BLE001
             try:
                 self.ffmpeg_process.terminate()
-                self.ffmpeg_process.wait(timeout=5)
-            except:
-                self.ffmpeg_process.kill()
-        
-        if self.http_server_process:
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            self.ffmpeg_process.wait(timeout=5)
+        except Exception:  # noqa: BLE001
             try:
-                self.http_server_process.terminate()
-                self.http_server_process.wait(timeout=5)
-            except:
-                self.http_server_process.kill()
-    
-    def play_on_esphome(self):
-        """Send play_media command to ESPHome device via HA API"""
-        local_ip = self.get_local_ip()
-        stream_url = f"http://{local_ip}:{7000 + self.port}/stream_{self.entity_id.replace('.', '_')}.wav"
-        
-        print(f"Sending play command to {self.entity_id} with URL: {stream_url}", file=sys.stderr)
-        
+                os.killpg(self.ffmpeg_process.pid, signal.SIGKILL)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def play_media(self) -> bool:
+        payload = {
+            "entity_id": self.entity_id,
+            "media_content_id": self.stream_url,
+            "media_content_type": self.media_content_type,
+        }
+        print(
+            f"Calling media_player.play_media on {self.entity_id}: {self.stream_url}",
+            file=sys.stderr,
+        )
         try:
-            payload = {
-                'entity_id': self.entity_id,
-                'media_content_id': stream_url,
-                'media_content_type': 'music',
-                'extra': {
-                    'bypass_proxy': True  # Tell ESPHome to skip its proxy
-                }
-            }
-            
             response = requests.post(
-                f'{HA_API_URL}/services/media_player/play_media',
+                f"{HA_API_URL}/services/media_player/play_media",
                 headers={
-                    'Authorization': f'Bearer {SUPERVISOR_TOKEN}',
-                    'Content-Type': 'application/json',
+                    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+                    "Content-Type": "application/json",
                 },
                 json=payload,
-                timeout=10
+                timeout=10,
             )
             response.raise_for_status()
-            print(f"✓ Started playback on {self.entity_id}", file=sys.stderr)
+            print(f"✓ play_media accepted for {self.entity_id}", file=sys.stderr)
             return True
-            
-        except Exception as e:
-            print(f"✗ Error playing on {self.entity_id}: {e}", file=sys.stderr)
-            return False
-    
-    def stop_on_esphome(self):
-        """Send stop command to ESPHome device via HA API"""
-        try:
-            payload = {'entity_id': self.entity_id}
-            
-            response = requests.post(
-                f'{HA_API_URL}/services/media_player/media_stop',
-                headers={
-                    'Authorization': f'Bearer {SUPERVISOR_TOKEN}',
-                    'Content-Type': 'application/json',
-                },
-                json=payload,
-                timeout=10
-            )
-            response.raise_for_status()
-            print(f"✓ Stopped playback on {self.entity_id}", file=sys.stderr)
-            return True
-            
-        except Exception as e:
-            print(f"✗ Error stopping {self.entity_id}: {e}", file=sys.stderr)
+        except Exception as err:  # noqa: BLE001
+            print(f"✗ play_media failed for {self.entity_id}: {err}", file=sys.stderr)
             return False
 
-def handle_start(entity_id: str, pipe_path: str, port: int):
-    """Handle playback start"""
+    def stop_media(self) -> bool:
+        try:
+            response = requests.post(
+                f"{HA_API_URL}/services/media_player/media_stop",
+                headers={
+                    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+                json={"entity_id": self.entity_id},
+                timeout=10,
+            )
+            response.raise_for_status()
+            print(f"✓ media_stop accepted for {self.entity_id}", file=sys.stderr)
+            return True
+        except Exception as err:  # noqa: BLE001
+            print(f"✗ media_stop failed for {self.entity_id}: {err}", file=sys.stderr)
+            return False
+
+
+def handle_start(entity_id: str, pipe_path: str, port_offset: str) -> None:
     print(f"Playback starting for {entity_id}", file=sys.stderr)
-    
-    handler = AudioStreamHandler(entity_id, pipe_path, int(port))
-    
-    # Start servers and begin playback
-    handler.start_http_server()
-    handler.play_on_esphome()
-    
-    # Store handler info for stop command
-    state_file = f"/tmp/shairport_state_{entity_id.replace('.', '_')}.json"
-    with open(state_file, 'w') as f:
-        json.dump({
-            'entity_id': entity_id,
-            'pipe_path': pipe_path,
-            'port': port,
-            'ffmpeg_pid': handler.ffmpeg_process.pid if handler.ffmpeg_process else None,
-            'http_pid': handler.http_server_process.pid if handler.http_server_process else None
-        }, f)
+    handler = AudioStreamHandler(entity_id, pipe_path, int(port_offset))
+    handler.start_stream()
+    handler.play_media()
 
-def handle_stop(entity_id: str):
-    """Handle playback stop"""
+    with open(state_path(entity_id), "w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "entity_id": entity_id,
+                "pipe_path": pipe_path,
+                "port": handler.port_offset,
+                "stream_url": handler.stream_url,
+                "ffmpeg_pid": handler.ffmpeg_process.pid if handler.ffmpeg_process else None,
+            },
+            handle,
+        )
+
+
+def handle_stop(entity_id: str) -> None:
     print(f"Playback stopping for {entity_id}", file=sys.stderr)
-    
-    # Read state file
-    state_file = f"/tmp/shairport_state_{entity_id.replace('.', '_')}.json"
+    path = state_path(entity_id)
     try:
-        with open(state_file, 'r') as f:
-            state = json.load(f)
-        
-        # Stop ESPHome playback
-        handler = AudioStreamHandler(entity_id, state['pipe_path'], int(state['port']))
-        handler.ffmpeg_process = subprocess.Popen(['true'])  # Dummy
-        handler.ffmpeg_process.pid = state.get('ffmpeg_pid')
-        handler.http_server_process = subprocess.Popen(['true'])  # Dummy
-        handler.http_server_process.pid = state.get('http_pid')
-        
-        handler.stop_on_esphome()
-        handler.stop_servers()
-        
-        # Clean up state file
-        os.remove(state_file)
-        
-    except Exception as e:
-        print(f"✗ Error in stop handler: {e}", file=sys.stderr)
+        with open(path, "r", encoding="utf-8") as handle:
+            state = json.load(handle)
 
-def main():
-    """Main function"""
+        handler = AudioStreamHandler(
+            entity_id,
+            state.get("pipe_path", ""),
+            int(state.get("port", 0)),
+        )
+        ffmpeg_pid = state.get("ffmpeg_pid")
+        if ffmpeg_pid:
+            try:
+                os.killpg(int(ffmpeg_pid), signal.SIGTERM)
+            except Exception:  # noqa: BLE001
+                try:
+                    os.kill(int(ffmpeg_pid), signal.SIGTERM)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        handler.stop_media()
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception as err:  # noqa: BLE001
+        print(f"✗ Error in stop handler: {err}", file=sys.stderr)
+
+
+def main() -> None:
     if len(sys.argv) < 3:
-        print("Usage: shairport-play-handler.py <start|stop> <entity_id> [pipe_path] [port]", file=sys.stderr)
+        print(
+            "Usage: shairport-play-handler.py <start|stop> <entity_id> [pipe_path] [port]",
+            file=sys.stderr,
+        )
         sys.exit(1)
-    
+
     command = sys.argv[1]
     entity_id = sys.argv[2]
-    
-    if command == 'start':
+
+    if command == "start":
         if len(sys.argv) < 5:
             print("start command requires pipe_path and port", file=sys.stderr)
             sys.exit(1)
-        pipe_path = sys.argv[3]
-        port = sys.argv[4]
-        handle_start(entity_id, pipe_path, port)
-    elif command == 'stop':
+        handle_start(entity_id, sys.argv[3], sys.argv[4])
+    elif command == "stop":
         handle_stop(entity_id)
     else:
         print(f"Unknown command: {command}", file=sys.stderr)
         sys.exit(1)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

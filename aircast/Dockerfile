@@ -63,6 +63,7 @@ RUN \
     && make -j$(nproc) \
     && make install \
     \
+    && chmod a+x /usr/bin/media-players.py \
     && chmod a+x /usr/bin/esphome-discovery.py \
     && chmod a+x /usr/bin/esphome-airplay-bridge.py \
     && chmod a+x /usr/bin/shairport-manager.py \

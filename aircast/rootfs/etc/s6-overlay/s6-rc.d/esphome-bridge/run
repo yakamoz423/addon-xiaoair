@@ -1,19 +1,16 @@
 #!/command/with-contenv bashio
 # shellcheck shell=bash
 # ==============================================================================
-# Home Assistant Community Add-on: AirCast
-# Runs the ESPHome AirPlay Bridge via Shairport-Sync (if enabled)
+# XiaoAir: AirPlay -> Home Assistant media_player bridge
 # ==============================================================================
 
-# Check if ESPHome support is enabled
-if bashio::config.false 'esphome_enabled'; then
-    bashio::log.info 'ESPHome support is disabled, skipping ESPHome bridge'
+if bashio::config.false 'media_bridge_enabled'; then
+    bashio::log.info 'Media bridge is disabled, skipping XiaoAir bridge'
     exec sleep infinity
 fi
 
-bashio::log.info 'Starting ESPHome AirPlay Bridge (Shairport-Sync)...'
+bashio::log.info 'Starting XiaoAir media_player AirPlay bridge (Shairport-Sync)...'
 
-# Basic diagnostics
 if bashio::supervisor.ping; then
     bashio::log.info 'Supervisor API reachable'
 else
@@ -28,8 +25,6 @@ fi
 
 PYTHON_PATH="$(command -v python3 || echo 'python3 not found')"
 bashio::log.info "python3 executable: ${PYTHON_PATH}"
-bashio::log.info 'Skipping D-Bus and Avahi startup (not required)'
 
-# Run the Shairport-Sync manager for ESPHome devices
 bashio::log.info 'Launching shairport-manager.py...'
 exec /usr/bin/python3 /usr/bin/shairport-manager.py

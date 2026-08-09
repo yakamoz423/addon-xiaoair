@@ -1,76 +1,57 @@
 #!/usr/bin/env python3
-"""
-Shairport-Sync Manager for ESPHome Devices
-Creates and manages Shairport-Sync instances for ESPHome media players
-"""
-import os
-import sys
-import json
-import time
-import subprocess
-import signal
-import tempfile
-from pathlib import Path
-from typing import Dict, List
-import requests
+"""Manage Shairport-Sync instances for configured HA media_player entities."""
+from __future__ import annotations
 
-SUPERVISOR_TOKEN = os.environ.get('SUPERVISOR_TOKEN')
-HA_API_URL = 'http://supervisor/core/api'
-SHAIRPORT_CONFIG_DIR = '/tmp/shairport-configs'
-STREAM_PORT_BASE = 7000
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, List
+
+SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN")
+SHAIRPORT_CONFIG_DIR = "/tmp/shairport-configs"
+OPTIONS_FILE = "/data/options.json"
+
 
 class ShairportSyncManager:
-    """Manages Shairport-Sync instances for ESPHome devices"""
-    
-    def __init__(self, esphome_players: List[Dict], config: Dict):
-        self.esphome_players = esphome_players
+    """Creates and monitors one Shairport-Sync instance per media_player."""
+
+    def __init__(self, players: List[Dict[str, Any]], config: Dict[str, Any]):
+        self.players = players
         self.config = config
-        self.processes = {}
-        self.stream_pipes = {}
+        self.processes: Dict[str, subprocess.Popen] = {}
+        self.stream_pipes: Dict[str, str] = {}
         Path(SHAIRPORT_CONFIG_DIR).mkdir(exist_ok=True)
-        
-    def get_local_ip(self) -> str:
-        """Get the local IP address"""
-        try:
-            import socket
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            local_ip = s.getsockname()[0]
-            s.close()
-            return local_ip
-        except:
-            return "127.0.0.1"
-    
-    def create_shairport_config(self, player: Dict, port: int) -> str:
-        """Create Shairport-Sync configuration file for a player"""
-        player_name = player['friendly_name']
-        config_path = f"{SHAIRPORT_CONFIG_DIR}/{player['entity_id'].replace('.', '_')}.conf"
-        pipe_path = f"/tmp/shairport_{player['entity_id'].replace('.', '_')}.pipe"
-        
-        # Create named pipe for audio output
+
+    def create_shairport_config(self, player: Dict[str, Any], port_offset: int) -> str:
+        player_name = player["friendly_name"].replace('"', '\\"')
+        entity_key = player["entity_id"].replace(".", "_")
+        config_path = f"{SHAIRPORT_CONFIG_DIR}/{entity_key}.conf"
+        pipe_path = f"/tmp/shairport_{entity_key}.pipe"
+
         if os.path.exists(pipe_path):
             os.remove(pipe_path)
         os.mkfifo(pipe_path)
-        self.stream_pipes[player['entity_id']] = pipe_path
-        
+        self.stream_pipes[player["entity_id"]] = pipe_path
+
         config_content = f"""
 general = {{
     name = "{player_name}";
     output_backend = "pipe";
     mdns_backend = "avahi";
-    port = {5000 + port};
+    port = {5000 + port_offset};
     interpolation = "soxr";
 }};
 
 sessioncontrol = {{
     session_timeout = 20;
     allow_session_interruption = "yes";
-    run_this_before_play_begins = "/usr/bin/python3 /usr/bin/shairport-play-handler.py start {player['entity_id']} {pipe_path} {port}";
+    run_this_before_play_begins = "/usr/bin/python3 /usr/bin/shairport-play-handler.py start {player['entity_id']} {pipe_path} {port_offset}";
     run_this_after_play_ends = "/usr/bin/python3 /usr/bin/shairport-play-handler.py stop {player['entity_id']}";
     wait_for_completion = "no";
-}};
-
-alsa = {{
 }};
 
 pipe = {{
@@ -82,216 +63,155 @@ metadata = {{
     include_cover_art = "no";
 }};
 """
-        
-        with open(config_path, 'w') as f:
-            f.write(config_content)
-        
+        with open(config_path, "w", encoding="utf-8") as handle:
+            handle.write(config_content)
         return config_path
-    
-    def start_shairport_instance(self, player: Dict, port: int) -> subprocess.Popen:
-        """Start a Shairport-Sync instance for a player"""
-        config_path = self.create_shairport_config(player, port)
-        
-        cmd = [
-            'shairport-sync',
-            '-c', config_path,
-            '-v',  # verbose mode for debugging
-        ]
-        
-        print(f"Starting Shairport-Sync for {player['friendly_name']}")
+
+    def start_shairport_instance(
+        self, player: Dict[str, Any], port_offset: int
+    ) -> subprocess.Popen:
+        config_path = self.create_shairport_config(player, port_offset)
+        cmd = ["shairport-sync", "-c", config_path, "-v"]
+        print(f"Starting Shairport-Sync for {player['friendly_name']} -> {player['entity_id']}")
         print(f"Command: {' '.join(cmd)}")
-        
-        process = subprocess.Popen(
+        return subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True
+            text=True,
         )
-        
-        return process
-    
-    def start_all(self):
-        """Start Shairport-Sync instances for all ESPHome players"""
-        for idx, player in enumerate(self.esphome_players):
+
+    def start_all(self) -> None:
+        for idx, player in enumerate(self.players):
             try:
                 process = self.start_shairport_instance(player, idx)
-                self.processes[player['entity_id']] = process
-                print(f"✓ Started AirPlay receiver for {player['friendly_name']}")
-            except Exception as e:
-                print(f"✗ Failed to start Shairport-Sync for {player['friendly_name']}: {e}")
-    
-    def stop_all(self):
-        """Stop all Shairport-Sync instances"""
+                self.processes[player["entity_id"]] = process
+                print(
+                    f"✓ AirPlay '{player['friendly_name']}' -> {player['entity_id']}"
+                )
+            except Exception as err:  # noqa: BLE001
+                print(
+                    f"✗ Failed to start Shairport-Sync for {player['entity_id']}: {err}"
+                )
+
+    def stop_all(self) -> None:
         print("\nStopping all Shairport-Sync instances...")
         for entity_id, process in self.processes.items():
             try:
                 process.terminate()
                 process.wait(timeout=5)
                 print(f"✓ Stopped {entity_id}")
-            except Exception as e:
-                print(f"✗ Error stopping {entity_id}: {e}")
+            except Exception as err:  # noqa: BLE001
+                print(f"✗ Error stopping {entity_id}: {err}")
                 try:
                     process.kill()
-                except:
+                except Exception:  # noqa: BLE001
                     pass
-        
-        # Clean up pipes
+
         for pipe_path in self.stream_pipes.values():
             try:
                 if os.path.exists(pipe_path):
                     os.remove(pipe_path)
-            except:
+            except Exception:  # noqa: BLE001
                 pass
-    
-    def monitor(self):
-        """Monitor running processes and restart if needed"""
+
+    def monitor(self) -> None:
         while True:
             for entity_id, process in list(self.processes.items()):
                 if process.poll() is not None:
                     print(f"⚠ Shairport-Sync for {entity_id} died, restarting...")
-                    # Find the player
-                    player = next(p for p in self.esphome_players if p['entity_id'] == entity_id)
-                    idx = self.esphome_players.index(player)
+                    player = next(p for p in self.players if p["entity_id"] == entity_id)
+                    idx = self.players.index(player)
                     try:
-                        new_process = self.start_shairport_instance(player, idx)
-                        self.processes[entity_id] = new_process
-                    except Exception as e:
-                        print(f"✗ Failed to restart: {e}")
-            
+                        self.processes[entity_id] = self.start_shairport_instance(
+                            player, idx
+                        )
+                    except Exception as err:  # noqa: BLE001
+                        print(f"✗ Failed to restart: {err}")
             time.sleep(5)
 
-def discover_esphome_players() -> List[Dict]:
-    """Discover ESPHome media players via Home Assistant API"""
-    try:
-        result = subprocess.run(
-            ['/usr/bin/esphome-discovery.py'],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        # The script prints info and then JSON on the last line
-        lines = result.stdout.strip().split('\n')
-        json_line = lines[-1]
-        return json.loads(json_line)
-    except Exception as e:
-        print(f"Error discovering ESPHome players: {e}", file=sys.stderr)
-        return []
 
-def load_config():
-    """Load add-on configuration"""
-    config_file = '/data/options.json'
+def load_config() -> Dict[str, Any]:
     try:
-        with open(config_file, 'r') as f:
-            return json.load(f)
-    except:
+        with open(OPTIONS_FILE, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:  # noqa: BLE001
         return {}
 
-def main():
-    """Main function"""
+
+def load_players() -> List[Dict[str, Any]]:
     try:
-        print("=" * 60)
-        print("Starting ESPHome AirPlay Bridge Manager...")
-        print("=" * 60)
-        
-        # Check for SUPERVISOR_TOKEN
-        if not SUPERVISOR_TOKEN:
-            print("ERROR: SUPERVISOR_TOKEN not found in environment")
-            print("This should be automatically provided by Home Assistant")
-            sys.exit(1)
-        
-        print(f"✓ SUPERVISOR_TOKEN found")
-        
-        config = load_config()
-        print(f"✓ Configuration loaded: {config}")
+        result = subprocess.run(
+            ["/usr/bin/media-players.py"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        lines = [line for line in result.stdout.strip().split("\n") if line.strip()]
+        if not lines:
+            return []
+        return json.loads(lines[-1])
+    except Exception as err:  # noqa: BLE001
+        print(f"Error loading configured media players: {err}", file=sys.stderr)
+        if "result" in locals():
+            print(result.stderr, file=sys.stderr)
+        return []
 
-        entity_filter = {
-            entity.strip().lower()
-            for entity in config.get('esphome_entities', [])
-            if isinstance(entity, str) and entity.strip()
-        }
-        
-        # Check if ESPHome support is enabled
-        if not config.get('esphome_enabled', False):
-            print("ESPHome support is disabled in configuration")
-            sys.exit(0)
-        
-        print(f"✓ ESPHome support is enabled")
-        
-        # Discover ESPHome players
-        print("\nDiscovering ESPHome media players...")
-        players = discover_esphome_players()
 
-        if entity_filter:
-            players = [
-                player
-                for player in players
-                if player.get('entity_id', '').lower() in entity_filter
-            ]
-            if players:
-                print(
-                    "✓ Filtered to configured ESPHome entities: "
-                    + ", ".join(player['entity_id'] for player in players)
-                )
-            else:
-                print("⚠ Configured ESPHome entities not found yet")
-        
-        if not players:
-            print("⚠ No ESPHome media players found")
-            print("Waiting for ESPHome devices to become available...")
-            print("The service will keep running and check periodically.")
-            print("You can check logs at any time to see the status.")
-            # Keep running and check every 60 seconds
-            while True:
-                time.sleep(60)
-                print("Checking for ESPHome players...")
-                players = discover_esphome_players()
-                if entity_filter:
-                    players = [
-                        player
-                        for player in players
-                        if player.get('entity_id', '').lower() in entity_filter
-                    ]
-                if players:
-                    print(f"\n✓ Found {len(players)} ESPHome media player(s)!")
-                    break
-                else:
-                    print("Still no ESPHome players found, will check again in 60s...")
-    
-    except Exception as e:
-        print(f"FATAL ERROR in main: {e}")
-        import traceback
-        traceback.print_exc()
+def main() -> None:
+    print("=" * 60)
+    print("Starting XiaoAir media_player bridge manager...")
+    print("=" * 60)
+
+    if not SUPERVISOR_TOKEN:
+        print("ERROR: SUPERVISOR_TOKEN not found in environment")
         sys.exit(1)
-    
-    print(f"\nFound {len(players)} ESPHome media player(s)")
+
+    config = load_config()
+    print(f"✓ Configuration loaded: {json.dumps(config, ensure_ascii=False)}")
+
+    if not config.get("media_bridge_enabled", True):
+        print("Media bridge is disabled in configuration")
+        sys.exit(0)
+
+    print("\nLoading configured media_player targets...")
+    players = load_players()
+
+    if not players:
+        print("⚠ No media_player entities configured")
+        print("Add players in the add-on Configuration tab, then restart.")
+        while True:
+            time.sleep(60)
+            print("Rechecking configured media_player targets...")
+            players = load_players()
+            if players:
+                print(f"\n✓ Found {len(players)} configured player(s)!")
+                break
+
+    print(f"\nUsing {len(players)} media_player target(s)")
     for player in players:
         print(f"  • {player['friendly_name']} ({player['entity_id']})")
-    
-    # Create and start manager
+
     manager = ShairportSyncManager(players, config)
-    
-    # Handle shutdown gracefully
-    def signal_handler(signum, frame):
+
+    def signal_handler(signum, frame):  # noqa: ANN001, ARG001
         print("\nReceived shutdown signal")
         manager.stop_all()
         sys.exit(0)
-    
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Start all Shairport-Sync instances
+
     manager.start_all()
-    
-    print(f"\n{'='*60}")
-    print("All AirPlay receivers are now running!")
-    print("You should see them appear on your iOS/Mac devices")
-    print(f"{'='*60}\n")
-    
-    # Monitor processes
+    print(f"\n{'=' * 60}")
+    print("AirPlay receivers are running. Select them on iPhone/Mac.")
+    print(f"{'=' * 60}\n")
+
     try:
         manager.monitor()
     except KeyboardInterrupt:
         manager.stop_all()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

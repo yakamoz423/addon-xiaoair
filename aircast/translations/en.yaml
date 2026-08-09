@@ -27,3 +27,24 @@ configuration:
     name: Drift
     description: >-
       Allow to let timing reference drift (no click).
+  media_bridge_enabled:
+    name: Enable media_player bridge
+    description: >-
+      When enabled, create AirPlay receivers for the media_player entities
+      configured below and call media_player.play_media when AirPlay starts.
+  players:
+    name: Target media players
+    description: >-
+      Select one or more Home Assistant media_player entities (same as
+      Developer Tools → Actions → media_player.play_media). Optional AirPlay
+      name overrides the name shown on iPhone/Mac.
+  media_content_type:
+    name: media_content_type
+    description: >-
+      Value passed to media_player.play_media as media_content_type
+      (usually "music").
+  stream_format:
+    name: Stream format
+    description: >-
+      HTTP stream format served to the target player. Use mp3 for XiaoAI
+      speakers; wav may work for ESPHome and similar players.
