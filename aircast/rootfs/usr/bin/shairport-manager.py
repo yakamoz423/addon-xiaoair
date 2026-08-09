@@ -9,11 +9,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN")
 SHAIRPORT_CONFIG_DIR = "/tmp/shairport-configs"
 OPTIONS_FILE = "/data/options.json"
+MAX_BACKOFF_SEC = 60
 
 
 class ShairportSyncManager:
@@ -24,24 +25,43 @@ class ShairportSyncManager:
         self.config = config
         self.processes: Dict[str, subprocess.Popen] = {}
         self.stream_pipes: Dict[str, str] = {}
+        self.log_files: Dict[str, str] = {}
+        self.log_handles: Dict[str, Any] = {}
+        self.fail_counts: Dict[str, int] = {}
+        self.next_restart_at: Dict[str, float] = {}
         Path(SHAIRPORT_CONFIG_DIR).mkdir(exist_ok=True)
 
     def create_shairport_config(self, player: Dict[str, Any], port_offset: int) -> str:
-        player_name = player["friendly_name"].replace('"', '\\"')
-        entity_key = player["entity_id"].replace(".", "_")
+        player_name = player["friendly_name"].replace("\\", "\\\\").replace('"', '\\"')
+        entity_id = player["entity_id"]
+        entity_key = entity_id.replace(".", "_")
         config_path = f"{SHAIRPORT_CONFIG_DIR}/{entity_key}.conf"
         pipe_path = f"/tmp/shairport_{entity_key}.pipe"
+        start_cmd = (
+            f"/usr/bin/python3 /usr/bin/shairport-play-handler.py "
+            f"start {entity_id} {pipe_path} {port_offset}"
+        )
+        stop_cmd = (
+            f"/usr/bin/python3 /usr/bin/shairport-play-handler.py stop {entity_id}"
+        )
 
         if os.path.exists(pipe_path):
-            os.remove(pipe_path)
-        os.mkfifo(pipe_path)
-        self.stream_pipes[player["entity_id"]] = pipe_path
+            try:
+                os.remove(pipe_path)
+            except OSError as err:
+                print(f"Warning: could not remove old pipe {pipe_path}: {err}")
+        if not os.path.exists(pipe_path):
+            os.mkfifo(pipe_path)
+        self.stream_pipes[entity_id] = pipe_path
+
+        # Prefer Avahi (host_dbus on HAOS). tinysvcmdns only if built in.
+        mdns_backend = os.environ.get("XIAOAIR_MDNS_BACKEND", "avahi")
 
         config_content = f"""
 general = {{
     name = "{player_name}";
     output_backend = "pipe";
-    mdns_backend = "avahi";
+    mdns_backend = "{mdns_backend}";
     port = {5000 + port_offset};
     interpolation = "soxr";
 }};
@@ -49,8 +69,8 @@ general = {{
 sessioncontrol = {{
     session_timeout = 20;
     allow_session_interruption = "yes";
-    run_this_before_play_begins = "/usr/bin/python3 /usr/bin/shairport-play-handler.py start {player['entity_id']} {pipe_path} {port_offset}";
-    run_this_after_play_ends = "/usr/bin/python3 /usr/bin/shairport-play-handler.py stop {player['entity_id']}";
+    run_this_before_play_begins = "{start_cmd}";
+    run_this_after_play_ends = "{stop_cmd}";
     wait_for_completion = "no";
 }};
 
@@ -67,18 +87,48 @@ metadata = {{
             handle.write(config_content)
         return config_path
 
+    def _drain_log(self, entity_id: str, process: subprocess.Popen) -> str:
+        log_path = self.log_files.get(entity_id)
+        chunks: List[str] = []
+        if process.stdout:
+            try:
+                process.stdout.flush()
+            except Exception:  # noqa: BLE001
+                pass
+        if log_path and os.path.exists(log_path):
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="replace") as handle:
+                    chunks.append(handle.read()[-4000:])
+            except OSError:
+                pass
+        return "\n".join(chunks).strip()
+
     def start_shairport_instance(
         self, player: Dict[str, Any], port_offset: int
     ) -> subprocess.Popen:
         config_path = self.create_shairport_config(player, port_offset)
+        entity_id = player["entity_id"]
+        log_path = f"/tmp/shairport_{entity_id.replace('.', '_')}.log"
+        self.log_files[entity_id] = log_path
+        old_handle = self.log_handles.pop(entity_id, None)
+        if old_handle is not None:
+            try:
+                old_handle.close()
+            except Exception:  # noqa: BLE001
+                pass
+        log_handle = open(log_path, "ab", buffering=0)
+        self.log_handles[entity_id] = log_handle
         cmd = ["shairport-sync", "-c", config_path, "-v"]
-        print(f"Starting Shairport-Sync for {player['friendly_name']} -> {player['entity_id']}")
+        print(
+            f"Starting Shairport-Sync for {player['friendly_name']} -> {entity_id}"
+        )
         print(f"Command: {' '.join(cmd)}")
+        print(f"Log file: {log_path}")
         return subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
 
     def start_all(self) -> None:
@@ -86,9 +136,27 @@ metadata = {{
             try:
                 process = self.start_shairport_instance(player, idx)
                 self.processes[player["entity_id"]] = process
-                print(
-                    f"✓ AirPlay '{player['friendly_name']}' -> {player['entity_id']}"
-                )
+                # Give it a moment so immediate avahi/config failures show up.
+                time.sleep(0.8)
+                if process.poll() is not None:
+                    detail = self._drain_log(player["entity_id"], process)
+                    print(
+                        f"✗ Shairport-Sync exited immediately "
+                        f"(code={process.returncode}) for {player['entity_id']}"
+                    )
+                    if detail:
+                        print("--- shairport-sync output ---")
+                        print(detail)
+                        print("--- end ---")
+                    else:
+                        print(
+                            "(no output captured — usually Avahi/D-Bus missing; "
+                            "ensure host_dbus / avahi-daemon)"
+                        )
+                else:
+                    print(
+                        f"✓ AirPlay '{player['friendly_name']}' -> {player['entity_id']}"
+                    )
             except Exception as err:  # noqa: BLE001
                 print(
                     f"✗ Failed to start Shairport-Sync for {player['entity_id']}: {err}"
@@ -98,13 +166,13 @@ metadata = {{
         print("\nStopping all Shairport-Sync instances...")
         for entity_id, process in self.processes.items():
             try:
-                process.terminate()
+                os.killpg(process.pid, signal.SIGTERM)
                 process.wait(timeout=5)
                 print(f"✓ Stopped {entity_id}")
             except Exception as err:  # noqa: BLE001
                 print(f"✗ Error stopping {entity_id}: {err}")
                 try:
-                    process.kill()
+                    os.killpg(process.pid, signal.SIGKILL)
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -115,20 +183,66 @@ metadata = {{
             except Exception:  # noqa: BLE001
                 pass
 
+    def _backoff_seconds(self, entity_id: str) -> int:
+        fails = self.fail_counts.get(entity_id, 0)
+        return min(MAX_BACKOFF_SEC, 5 * (2 ** min(fails, 3)))
+
     def monitor(self) -> None:
         while True:
+            now = time.time()
             for entity_id, process in list(self.processes.items()):
-                if process.poll() is not None:
-                    print(f"⚠ Shairport-Sync for {entity_id} died, restarting...")
-                    player = next(p for p in self.players if p["entity_id"] == entity_id)
-                    idx = self.players.index(player)
-                    try:
-                        self.processes[entity_id] = self.start_shairport_instance(
-                            player, idx
+                code = process.poll()
+                if code is None:
+                    continue
+
+                due = self.next_restart_at.get(entity_id, 0)
+                if now < due:
+                    continue
+
+                detail = self._drain_log(entity_id, process)
+                self.fail_counts[entity_id] = self.fail_counts.get(entity_id, 0) + 1
+                wait_for = self._backoff_seconds(entity_id)
+
+                print(
+                    f"⚠ Shairport-Sync for {entity_id} died "
+                    f"(code={code}, fails={self.fail_counts[entity_id]}), "
+                    f"restarting in {wait_for}s..."
+                )
+                if detail:
+                    print("--- shairport-sync output ---")
+                    print(detail)
+                    print("--- end ---")
+
+                self.next_restart_at[entity_id] = now + wait_for
+                time.sleep(wait_for)
+
+                player = next(p for p in self.players if p["entity_id"] == entity_id)
+                idx = self.players.index(player)
+                try:
+                    new_proc = self.start_shairport_instance(player, idx)
+                    self.processes[entity_id] = new_proc
+                    time.sleep(0.8)
+                    if new_proc.poll() is None:
+                        print(f"✓ Restarted Shairport-Sync for {entity_id}")
+                        self.fail_counts[entity_id] = 0
+                        self.next_restart_at[entity_id] = 0
+                    else:
+                        print(
+                            f"✗ Restart still failing for {entity_id} "
+                            f"(code={new_proc.returncode})"
                         )
-                    except Exception as err:  # noqa: BLE001
-                        print(f"✗ Failed to restart: {err}")
-            time.sleep(5)
+                        more = self._drain_log(entity_id, new_proc)
+                        if more:
+                            print(more[-2000:])
+                        self.next_restart_at[entity_id] = (
+                            time.time() + self._backoff_seconds(entity_id)
+                        )
+                except Exception as err:  # noqa: BLE001
+                    print(f"✗ Failed to restart: {err}")
+                    self.next_restart_at[entity_id] = (
+                        time.time() + self._backoff_seconds(entity_id)
+                    )
+            time.sleep(2)
 
 
 def load_config() -> Dict[str, Any]:
@@ -158,6 +272,50 @@ def load_players() -> List[Dict[str, Any]]:
         return []
 
 
+def ensure_avahi() -> None:
+    """Best-effort: use host Avahi via D-Bus, else start a local daemon."""
+    check = [
+        "dbus-send",
+        "--system",
+        "--print-reply",
+        "--dest=org.freedesktop.Avahi",
+        "/",
+        "org.freedesktop.Avahi.Server.GetVersion",
+    ]
+    try:
+        proc = subprocess.run(check, capture_output=True, text=True, timeout=5)
+        if proc.returncode == 0:
+            print("✓ Avahi available on system D-Bus")
+            return
+        print(f"Avahi not on D-Bus yet (rc={proc.returncode}): {proc.stderr.strip()}")
+    except Exception as err:  # noqa: BLE001
+        print(f"Avahi D-Bus check failed: {err}")
+
+    print("Trying to start local dbus/avahi...")
+    os.makedirs("/run/dbus", exist_ok=True)
+    os.makedirs("/var/run/avahi-daemon", exist_ok=True)
+    for cmd in (
+        ["dbus-daemon", "--system", "--fork"],
+        ["avahi-daemon", "--daemonize", "--no-drop-root", "--no-rlimits"],
+    ):
+        try:
+            subprocess.run(cmd, check=False, timeout=10)
+        except Exception as err:  # noqa: BLE001
+            print(f"Warning: {' '.join(cmd)} failed: {err}")
+    time.sleep(1)
+    try:
+        proc = subprocess.run(check, capture_output=True, text=True, timeout=5)
+        if proc.returncode == 0:
+            print("✓ Local Avahi is up")
+        else:
+            print(
+                "✗ Avahi still unavailable — Shairport-Sync will likely exit. "
+                f"{proc.stderr.strip()}"
+            )
+    except Exception as err:  # noqa: BLE001
+        print(f"✗ Avahi re-check failed: {err}")
+
+
 def main() -> None:
     print("=" * 60)
     print("Starting XiaoAir media_player bridge manager...")
@@ -166,6 +324,8 @@ def main() -> None:
     if not SUPERVISOR_TOKEN:
         print("ERROR: SUPERVISOR_TOKEN not found in environment")
         sys.exit(1)
+
+    ensure_avahi()
 
     config = load_config()
     print(f"✓ Configuration loaded: {json.dumps(config, ensure_ascii=False)}")

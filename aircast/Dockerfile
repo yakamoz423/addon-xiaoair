@@ -29,6 +29,10 @@ RUN \
         libasound2-dev \
         libnss-mdns \
         libavahi-client-dev \
+        libavahi-client3 \
+        avahi-daemon \
+        avahi-utils \
+        dbus \
         libssl-dev \
         libsoxr-dev \
         libplist-dev \
@@ -92,6 +96,10 @@ RUN \
     && apt-mark manual \
         ffmpeg \
         libnss-mdns \
+        libavahi-client3 \
+        avahi-daemon \
+        avahi-utils \
+        dbus \
         libasound2-plugins \
         python3 \
         python3-requests \

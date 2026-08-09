@@ -1,6 +1,6 @@
 ---
 name: XiaoAir
-version: "0.1.5"
+version: "0.1.6"
 slug: xiaoair
 description: AirPlay bridge to Home Assistant media_player entities (e.g. XiaoAI).
 url: https://github.com/yakamoz423/addon-xiaoair
@@ -12,6 +12,7 @@ arch:
 hassio_api: true
 homeassistant_api: true
 host_network: true
+host_dbus: true
 ingress: true
 ingress_port: 8099
 panel_icon: mdi:cast-audio
