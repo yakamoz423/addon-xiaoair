@@ -427,7 +427,7 @@ HTML = """<!doctype html>
       padding: 24px;
     }
     .card {
-      max-width: 560px;
+      max-width: 720px;
       margin: 0 auto;
       background: var(--card);
       border: 1px solid var(--border);
@@ -472,6 +472,22 @@ HTML = """<!doctype html>
     }
     .ok { color: var(--ok); }
     .err { color: var(--danger); }
+    .logbox {
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 0.78rem;
+      background: #0d0f14;
+      border-radius: 8px;
+      padding: 12px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      border: 1px solid var(--border);
+      min-height: 12em;
+      max-height: 22em;
+      overflow: auto;
+      color: #cfd3da;
+      margin-top: 8px;
+    }
+    h2 { font-size: 1rem; margin: 18px 0 4px; }
   </style>
 </head>
 <body>
@@ -486,6 +502,9 @@ HTML = """<!doctype html>
       <button class="stop" id="btnStop" onclick="stopTest()">停止测试</button>
     </div>
     <div class="meta" id="status">加载中…</div>
+    <h2>AirPlay 播放日志</h2>
+    <p>iPhone 投屏时这里会实时显示钩子 / ffmpeg / play_media（同步出现在插件日志里，前缀 <code>[play]</code>）。</p>
+    <div class="logbox" id="playlog">（尚无日志）</div>
   </div>
   <script>
     let lastPlayers = [];
@@ -559,8 +578,18 @@ HTML = """<!doctype html>
       document.getElementById('btnStop').disabled = true;
       render(await api('./api/test/stop', 'POST'));
     }
+    async function refreshLog() {
+      const data = await api('./api/play-log');
+      const el = document.getElementById('playlog');
+      const text = (data.text || '').trim();
+      const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
+      el.textContent = text || '（尚无日志 — 用 iPhone 选 XiaoAir 播放后会出现）';
+      if (atBottom) el.scrollTop = el.scrollHeight;
+    }
     refresh();
+    refreshLog();
     setInterval(refresh, 5000);
+    setInterval(refreshLog, 1500);
   </script>
 </body>
 </html>
@@ -610,6 +639,15 @@ class UIHandler(BaseHTTPRequestHandler):
             return
         if path.endswith("/api/players") or path == "/api/players":
             self._send_json(200, list_players())
+            return
+        if path.endswith("/api/play-log") or path == "/api/play-log":
+            text = ""
+            try:
+                with open("/tmp/xiaoair-play.log", "r", encoding="utf-8", errors="replace") as handle:
+                    text = handle.read()[-20000:]
+            except OSError:
+                text = ""
+            self._send_json(200, {"ok": True, "text": text})
             return
         self.send_error(404)
 

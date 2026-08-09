@@ -192,8 +192,40 @@ metadata = {{
         fails = self.fail_counts.get(entity_id, 0)
         return min(MAX_BACKOFF_SEC, 5 * (2 ** min(fails, 3)))
 
+    def _follow_text_file(self, path: str, offset: int, prefix: str) -> int:
+        """Print new lines from path to add-on logs; return updated byte offset."""
+        if not os.path.exists(path):
+            return offset
+        try:
+            size = os.path.getsize(path)
+            if offset > size:
+                offset = 0
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                handle.seek(offset)
+                data = handle.read()
+                offset = handle.tell()
+            if data:
+                for line in data.splitlines():
+                    if line.strip():
+                        print(f"{prefix}{line}", flush=True)
+        except OSError:
+            pass
+        return offset
+
     def monitor(self) -> None:
+        play_log_offset = 0
+        # Truncate stale play log so restart starts clean in HA logs.
+        try:
+            open("/tmp/xiaoair-play.log", "w", encoding="utf-8").close()
+        except OSError:
+            pass
+        print("Tailing AirPlay play hooks into add-on logs ([play] ...)", flush=True)
+
         while True:
+            play_log_offset = self._follow_text_file(
+                "/tmp/xiaoair-play.log", play_log_offset, "[play] "
+            )
+
             now = time.time()
             for entity_id, process in list(self.processes.items()):
                 code = process.poll()
@@ -247,7 +279,7 @@ metadata = {{
                     self.next_restart_at[entity_id] = (
                         time.time() + self._backoff_seconds(entity_id)
                     )
-            time.sleep(2)
+            time.sleep(0.5)
 
 
 def load_config() -> Dict[str, Any]:
