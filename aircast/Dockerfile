@@ -56,7 +56,7 @@ RUN \
     \
     && shairport-sync -V \
     && ldd "$(command -v shairport-sync)" \
-    && test -e /usr/lib/*/libconfig.so.11 -o -e /lib/*/libconfig.so.11 \
+    && ldd "$(command -v shairport-sync)" | grep -q 'libconfig\\.so' \
     \
     && apt-get purge -y --auto-remove unzip \
     && rm -fr \
