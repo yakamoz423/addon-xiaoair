@@ -29,8 +29,8 @@ configuration:
   media_player:
     name: Target media player
     description: >-
-      Home Assistant media_player entity (same picker as Developer Tools →
-      Actions → media_player.play_media).
+      Entity ID string, e.g. media_player.xiaoai_l05c (same as
+      media_player.play_media target).
   airplay_name:
     name: AirPlay name
     description: >-
