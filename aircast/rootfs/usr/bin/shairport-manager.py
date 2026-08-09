@@ -37,12 +37,16 @@ class ShairportSyncManager:
         entity_key = entity_id.replace(".", "_")
         config_path = f"{SHAIRPORT_CONFIG_DIR}/{entity_key}.conf"
         pipe_path = f"/tmp/shairport_{entity_key}.pipe"
+        # Shairport runs these via `sh -c`, so shell redirects work.
+        # Hook stdout/stderr are NOT shown in the add-on log otherwise.
         start_cmd = (
             f"/usr/bin/python3 /usr/bin/shairport-play-handler.py "
-            f"start {entity_id} {pipe_path} {port_offset}"
+            f"start {entity_id} {pipe_path} {port_offset} "
+            f">>/tmp/xiaoair-play.log 2>&1"
         )
         stop_cmd = (
-            f"/usr/bin/python3 /usr/bin/shairport-play-handler.py stop {entity_id}"
+            f"/usr/bin/python3 /usr/bin/shairport-play-handler.py "
+            f"stop {entity_id} >>/tmp/xiaoair-play.log 2>&1"
         )
 
         if os.path.exists(pipe_path):
@@ -71,7 +75,8 @@ sessioncontrol = {{
     allow_session_interruption = "yes";
     run_this_before_play_begins = "{start_cmd}";
     run_this_after_play_ends = "{stop_cmd}";
-    wait_for_completion = "no";
+    // Wait until HTTP stream + play_media are ready before audio hits the pipe.
+    wait_for_completion = "yes";
 }};
 
 pipe = {{
@@ -305,6 +310,30 @@ def ensure_mdns() -> None:
     print("Hint: use tinysvcmdns (default) if host Avahi is unavailable")
 
 
+def detect_local_ip() -> str:
+    try:
+        import socket
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        local_ip = sock.getsockname()[0]
+        sock.close()
+        return local_ip
+    except Exception:  # noqa: BLE001
+        return "127.0.0.1"
+
+
+def write_runtime_env() -> None:
+    """Persist token/IP for Shairport hooks (env may not always be inherited)."""
+    payload = {
+        "SUPERVISOR_TOKEN": SUPERVISOR_TOKEN,
+        "local_ip": detect_local_ip(),
+    }
+    with open("/tmp/xiaoair-env.json", "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    print(f"Runtime env written (local_ip={payload['local_ip']})")
+
+
 def main() -> None:
     print("=" * 60)
     print("Starting XiaoAir media_player bridge manager...")
@@ -314,6 +343,7 @@ def main() -> None:
         print("ERROR: SUPERVISOR_TOKEN not found in environment")
         sys.exit(1)
 
+    write_runtime_env()
     ensure_mdns()
 
     config = load_config()
