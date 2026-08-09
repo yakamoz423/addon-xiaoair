@@ -28,7 +28,8 @@ Same shape as Developer Tools → Actions → `media_player.play_media`.
 3. Install **XiaoAir**
 4. Configure (see below) and start
 
-First build compiles Shairport-Sync and may take a while.
+Updates install packaged `shairport-sync` (no long source compile). After GHCR
+images are published, installs can be pull-only.
 
 ## Configuration
 
