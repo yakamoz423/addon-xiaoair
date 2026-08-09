@@ -24,7 +24,7 @@ Same shape as Developer Tools → Actions → `media_player.play_media`.
 ## Install
 
 1. **Settings → Add-ons → Add-on Store → ⋮ → Repositories**
-2. Add: `https://github.com/yakamoz423/addon-xiaoair`
+2. Add: `https://github.com/yakamoz423/xiaoair`
 3. Install **XiaoAir**
 4. Configure (see below) and start
 
