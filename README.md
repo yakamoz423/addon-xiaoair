@@ -34,19 +34,18 @@ First build compiles Shairport-Sync and may take a while.
 
 ```yaml
 media_bridge_enabled: true
+media_player: media_player.your_xiaoai
+airplay_name: Living Room XiaoAI
 media_content_type: music
 stream_format: mp3
-players:
-  - entity_id: media_player.your_xiaoai
-    airplay_name: Living Room XiaoAI   # optional; shown on iPhone
 ```
 
 In the UI:
 
-- **Target media players**: entity picker (same domain as `media_player.play_media`)
-- **AirPlay name** (optional): name advertised to Apple devices
+- **Target media player**: entity picker (same as Developer Tools → `media_player.play_media`)
+- **AirPlay name**: name advertised to Apple devices
 - **media_content_type**: usually `music`
-- **stream_format**: `mp3` recommended for XiaoAI; `wav` for some ESPHome players
+- **stream_format**: `mp3` recommended for XiaoAI
 
 Chromecast / original AirCast options (`latency_*`, `drift`, `address`) remain available.
 

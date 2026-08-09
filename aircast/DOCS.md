@@ -14,23 +14,23 @@ AirPlay → Shairport-Sync → FFmpeg HTTP stream → media_player.play_media �
 ```yaml
 log_level: info
 media_bridge_enabled: true
+media_player: media_player.xiaoai_l05c
+airplay_name: XiaoAI AirPlay
 media_content_type: music
 stream_format: mp3
-players:
-  - entity_id: media_player.xiaoai_l05c
-    airplay_name: XiaoAI AirPlay
 ```
 
 ### Option: `media_bridge_enabled`
 
 Enable/disable the Shairport → `media_player` bridge.
 
-### Option: `players`
+### Option: `media_player`
 
-List of targets. Each item:
+Home Assistant `media_player.*` entity (UI entity picker).
 
-- `entity_id` — Home Assistant `media_player.*` entity (UI entity picker)
-- `airplay_name` — optional name shown in Apple AirPlay picker
+### Option: `airplay_name`
+
+Name shown in the Apple AirPlay picker.
 
 ### Option: `media_content_type`
 

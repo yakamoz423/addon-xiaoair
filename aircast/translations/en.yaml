@@ -12,39 +12,34 @@ configuration:
   latency_rtp:
     name: RTP Latency
     description: >-
-      Allows you to tweak the buffering, which is needed when the audio is
-      stuttering (e.g., low-quality network). This option specifies the number
-      of ms the add-on has to buffer the RTP audio (AirPlay). Setting this value
-      below 500ms is not recommended! Setting the value to 0 makes the add-on
-      to get the value from AirPlay.
+      RTP audio buffer in milliseconds for AirPlay.
   latency_http:
     name: HTTP Latency
     description: >-
-      Allows you to tweak the buffering, which is needed when the audio is
-      stuttering (e.g., low-quality network). This option specifies the number
-      of ms the add-on has to buffer the HTTP audio.
+      HTTP audio buffer in milliseconds.
   drift:
     name: Drift
     description: >-
-      Allow to let timing reference drift (no click).
+      Allow timing reference drift (no click).
   media_bridge_enabled:
     name: Enable media_player bridge
     description: >-
-      When enabled, create AirPlay receivers for the media_player entities
-      configured below and call media_player.play_media when AirPlay starts.
-  players:
-    name: Target media players
+      Create an AirPlay receiver and call media_player.play_media when
+      playback starts.
+  media_player:
+    name: Target media player
     description: >-
-      Select one or more Home Assistant media_player entities (same as
-      Developer Tools → Actions → media_player.play_media). Optional AirPlay
-      name overrides the name shown on iPhone/Mac.
+      Home Assistant media_player entity (same picker as Developer Tools →
+      Actions → media_player.play_media).
+  airplay_name:
+    name: AirPlay name
+    description: >-
+      Name shown on iPhone/Mac AirPlay picker.
   media_content_type:
     name: media_content_type
     description: >-
-      Value passed to media_player.play_media as media_content_type
-      (usually "music").
+      Value passed to media_player.play_media (usually "music").
   stream_format:
     name: Stream format
     description: >-
-      HTTP stream format served to the target player. Use mp3 for XiaoAI
-      speakers; wav may work for ESPHome and similar players.
+      HTTP stream format. Use mp3 for XiaoAI.

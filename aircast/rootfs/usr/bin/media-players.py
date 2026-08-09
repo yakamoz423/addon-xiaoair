@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve configured media_player entities for XiaoAir bridge."""
+"""Resolve the configured media_player entity for XiaoAir bridge."""
 from __future__ import annotations
 
 import json
@@ -48,43 +48,44 @@ def fetch_state(entity_id: str) -> Optional[Dict[str, Any]]:
 
 
 def resolve_players(options: Dict[str, Any]) -> List[Dict[str, Any]]:
-    configured = options.get("players") or []
+    """Build player list from flat config (and legacy players list if present)."""
     players: List[Dict[str, Any]] = []
 
-    for index, entry in enumerate(configured):
-        if isinstance(entry, str):
-            entity_id = entry.strip()
-            airplay_name = ""
-        elif isinstance(entry, dict):
-            entity_id = str(entry.get("entity_id") or "").strip()
-            airplay_name = str(entry.get("airplay_name") or "").strip()
-        else:
-            continue
+    entity_id = str(options.get("media_player") or "").strip()
+    airplay_name = str(options.get("airplay_name") or "").strip()
 
-        if not entity_id:
-            continue
-        if not entity_id.startswith("media_player."):
-            print(
-                f"Warning: skipping non media_player entity: {entity_id}",
-                file=sys.stderr,
-            )
-            continue
+    # Legacy nested config support
+    legacy = options.get("players") or []
+    if not entity_id and legacy:
+        first = legacy[0]
+        if isinstance(first, str):
+            entity_id = first.strip()
+        elif isinstance(first, dict):
+            entity_id = str(first.get("entity_id") or "").strip()
+            if not airplay_name:
+                airplay_name = str(first.get("airplay_name") or "").strip()
 
-        state = fetch_state(entity_id)
-        attributes = state.get("attributes", {}) if state else {}
-        friendly_name = attributes.get("friendly_name") or entity_id
-        name = airplay_name or friendly_name
+    if not entity_id:
+        return []
 
-        players.append(
-            {
-                "entity_id": entity_id,
-                "friendly_name": name,
-                "ha_friendly_name": friendly_name,
-                "state": state.get("state") if state else "unknown",
-                "index": index,
-            }
-        )
+    if not entity_id.startswith("media_player."):
+        print(f"Warning: not a media_player entity: {entity_id}", file=sys.stderr)
+        return []
 
+    state = fetch_state(entity_id)
+    attributes = state.get("attributes", {}) if state else {}
+    friendly_name = attributes.get("friendly_name") or entity_id
+    name = airplay_name or friendly_name
+
+    players.append(
+        {
+            "entity_id": entity_id,
+            "friendly_name": name,
+            "ha_friendly_name": friendly_name,
+            "state": state.get("state") if state else "unknown",
+            "index": 0,
+        }
+    )
     return players
 
 
@@ -98,7 +99,7 @@ def main() -> None:
     players = resolve_players(options)
 
     if not players:
-        print("No media_player entities configured", file=sys.stderr)
+        print("No media_player entity configured", file=sys.stderr)
         print(json.dumps([]))
         sys.exit(0)
 
