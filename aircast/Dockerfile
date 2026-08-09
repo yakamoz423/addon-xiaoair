@@ -5,11 +5,10 @@ FROM ${BUILD_FROM}
 # Set shell
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Copy root filesystem
-COPY rootfs /
-
-# Build shairport-sync with tinysvcmdns so AirPlay advertising works on HAOS
-# without relying on host Avahi/D-Bus. HA installs pull this prebuilt image.
+# ---------------------------------------------------------------------------
+# Layer A (rarely changes): packages + shairport-sync + AirConnect binary.
+# Keep this ABOVE `COPY rootfs` so Python/UI edits do not rebuild from source.
+# ---------------------------------------------------------------------------
 ARG BUILD_ARCH=amd64
 ARG AIRCAST_VERSION="1.9.3"
 ARG SHAIRPORT_VERSION="4.3.7"
@@ -65,15 +64,6 @@ RUN \
     && cp "/tmp/aircast-linux-${AIRCONNECT_ARCH}-static" /usr/bin/aircast \
     && chmod a+x /usr/bin/aircast \
     \
-    && chmod a+x /usr/bin/media-players.py \
-    && chmod a+x /usr/bin/esphome-discovery.py \
-    && chmod a+x /usr/bin/esphome-airplay-bridge.py \
-    && chmod a+x /usr/bin/shairport-manager.py \
-    && chmod a+x /usr/bin/shairport-play-handler.py \
-    && chmod a+x /usr/bin/xiaoair-ui.py \
-    && chmod a+x /etc/s6-overlay/s6-rc.d/xiaoair-ui/run \
-    && chmod a+x /etc/s6-overlay/s6-rc.d/xiaoair-ui/finish \
-    \
     && apt-get purge -y --auto-remove \
         unzip \
         build-essential \
@@ -93,10 +83,28 @@ RUN \
         libconfig11 \
         libssl3 \
         libsoxr0 \
+        curl \
+        ca-certificates \
+        xxd \
     && rm -fr \
         /tmp/* \
         /var/{cache,log}/* \
         /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Layer B (changes often): scripts / s6 services only.
+# ---------------------------------------------------------------------------
+COPY rootfs /
+
+RUN \
+    chmod a+x /usr/bin/media-players.py \
+    && chmod a+x /usr/bin/esphome-discovery.py \
+    && chmod a+x /usr/bin/esphome-airplay-bridge.py \
+    && chmod a+x /usr/bin/shairport-manager.py \
+    && chmod a+x /usr/bin/shairport-play-handler.py \
+    && chmod a+x /usr/bin/xiaoair-ui.py \
+    && chmod a+x /etc/s6-overlay/s6-rc.d/xiaoair-ui/run \
+    && chmod a+x /etc/s6-overlay/s6-rc.d/xiaoair-ui/finish
 
 # Build arguments
 ARG BUILD_ARCH
