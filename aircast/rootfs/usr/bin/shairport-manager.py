@@ -348,38 +348,6 @@ def ensure_mdns() -> None:
 
 
 def detect_local_ip() -> str:
-    """Pick a host LAN IP reachable by XiaoAI (avoid HAOS virt/secondary NICs)."""
-    ips: List[str] = []
-    try:
-        out = subprocess.check_output(
-            ["ip", "-4", "-o", "addr", "show", "scope", "global"],
-            text=True,
-            timeout=3,
-        )
-        for line in out.splitlines():
-            parts = line.split()
-            if "inet" in parts:
-                ips.append(parts[parts.index("inet") + 1].split("/")[0])
-    except Exception:  # noqa: BLE001
-        pass
-
-    def score(ip: str) -> int:
-        if ip.startswith(("172.30.", "172.17.", "127.")):
-            return -100
-        if ip.startswith("192.168.31."):
-            return 100
-        if ip.startswith("192.168.") and not ip.startswith("192.168.232."):
-            return 80
-        if ip.startswith("192.168.232."):
-            return 20
-        if ip.startswith("10."):
-            return 40
-        return 0
-
-    if ips:
-        best = sorted(ips, key=score, reverse=True)[0]
-        print(f"Detected host IPs: {', '.join(ips)} -> using {best}")
-        return best
     try:
         import socket
 

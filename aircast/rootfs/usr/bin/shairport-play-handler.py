@@ -63,51 +63,10 @@ def supervisor_token() -> Optional[str]:
     return load_json(ENV_FILE).get("SUPERVISOR_TOKEN")
 
 
-def list_host_ipv4() -> List[str]:
-    try:
-        out = subprocess.check_output(
-            ["ip", "-4", "-o", "addr", "show", "scope", "global"],
-            text=True,
-            timeout=3,
-        )
-    except Exception:  # noqa: BLE001
-        return []
-    ips: List[str] = []
-    for line in out.splitlines():
-        parts = line.split()
-        if "inet" not in parts:
-            continue
-        cidr = parts[parts.index("inet") + 1]
-        ips.append(cidr.split("/")[0])
-    return ips
-
-
 def get_local_ip() -> str:
-    """Prefer the LAN IP XiaoAI can reach (not HAOS secondary/virt NICs)."""
-    ips = list_host_ipv4()
-
-    def score(ip: str) -> int:
-        if ip.startswith(("172.30.", "172.17.", "127.")):
-            return -100
-        if ip.startswith("192.168.31."):
-            return 100
-        if ip.startswith("192.168.") and not ip.startswith("192.168.232."):
-            return 80
-        if ip.startswith("192.168.232."):
-            return 20
-        if ip.startswith("10."):
-            return 40
-        return 0
-
-    if ips:
-        best = sorted(ips, key=score, reverse=True)[0]
-        env_ip = load_json(ENV_FILE).get("local_ip")
-        if env_ip and str(env_ip) in ips and score(str(env_ip)) >= score(best):
-            return str(env_ip)
-        return best
-    env_ip = load_json(ENV_FILE).get("local_ip")
-    if env_ip:
-        return str(env_ip)
+    env = load_json(ENV_FILE)
+    if env.get("local_ip"):
+        return str(env["local_ip"])
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.connect(("8.8.8.8", 80))
