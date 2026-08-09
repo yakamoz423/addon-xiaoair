@@ -11,9 +11,10 @@ AirPlay → Shairport-Sync → FFmpeg HTTP stream → media_player.play_media �
 
 ## Test UI
 
-Configuration schema cannot host action buttons. Use the add-on **Ingress Web UI**
-instead: **Start test** generates a short MP3 beep and calls
-`media_player.play_media`; **Stop test** calls `media_player.media_stop`.
+Configuration schema cannot host entity dropdowns or action buttons. Use the
+add-on **Ingress Web UI** instead: pick a `media_player` from the dropdown
+(or leave Auto), **Save**, then **Start/Stop test** for a short MP3 beep via
+`media_player.play_media` / `media_stop`.
 
 ## Configuration
 

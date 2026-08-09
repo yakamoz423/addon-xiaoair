@@ -54,7 +54,7 @@ Chromecast / original AirCast options (`latency_*`, `drift`, `address`) remain a
 
 1. Leave **Target media player** empty (auto) or set a `media_player.*` entity
 2. Start the add-on
-3. Open the add-on **Web UI** (Ingress)：点「开始测试 / 停止测试」可对目标音箱播放示例提示音
+3. Open the add-on **Web UI** (Ingress)：下拉选择目标 `media_player`，可「保存」并「开始/停止测试」
 4. On iPhone/Mac, pick the AirPlay target named by `airplay_name` / friendly name
 5. Check add-on logs for auto-selected entity / `play_media` / stream URL
 

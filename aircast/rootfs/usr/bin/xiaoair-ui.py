@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""XiaoAir ingress UI: start/stop sample playback on the target media_player."""
+"""XiaoAir ingress UI: player dropdown + start/stop sample playback."""
 from __future__ import annotations
 
 import importlib.util
@@ -7,7 +7,6 @@ import json
 import os
 import signal
 import subprocess
-import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,6 +17,8 @@ import requests
 
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN")
 HA_API_URL = "http://supervisor/core/api"
+SUPERVISOR_URL = "http://supervisor"
+OPTIONS_FILE = "/data/options.json"
 UI_PORT = int(os.environ.get("XIAOAIR_UI_PORT", "8099"))
 TEST_PORT = int(os.environ.get("XIAOAIR_TEST_PORT", "7099"))
 STATE_FILE = "/tmp/xiaoair_test_state.json"
@@ -60,6 +61,89 @@ def ha_headers() -> Dict[str, str]:
     }
 
 
+def load_options() -> Dict[str, Any]:
+    try:
+        with open(OPTIONS_FILE, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+            return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def write_options_file(options: Dict[str, Any]) -> None:
+    with open(OPTIONS_FILE, "w", encoding="utf-8") as handle:
+        json.dump(options, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+
+
+def supervisor_set_options(options: Dict[str, Any]) -> None:
+    """Persist options through Supervisor so the Configuration tab stays in sync."""
+    response = requests.post(
+        f"{SUPERVISOR_URL}/addons/self/options",
+        headers=ha_headers(),
+        json={"options": options},
+        timeout=20,
+    )
+    if response.status_code >= 400:
+        # Some builds wrap payload differently; keep local file write as source of truth.
+        print(
+            f"warning: supervisor options update HTTP {response.status_code}: "
+            f"{response.text[:300]}",
+            flush=True,
+        )
+        response.raise_for_status()
+
+
+def configured_media_player_raw() -> str:
+    return str(load_options().get("media_player") or "").strip()
+
+
+def list_players() -> Dict[str, Any]:
+    mp = _load_media_players()
+    choices = mp.list_media_player_choices()
+    configured = configured_media_player_raw()
+    resolved = resolve_target()
+    return {
+        "ok": True,
+        "configured": configured,
+        "selected": configured
+        if configured and configured.lower() not in mp.AUTO_SENTINELS
+        else "",
+        "resolved_entity_id": resolved.get("entity_id"),
+        "players": choices,
+    }
+
+
+def save_media_player(entity_id: str) -> Dict[str, Any]:
+    entity_id = (entity_id or "").strip()
+    mp = _load_media_players()
+    if entity_id and entity_id.lower() not in mp.AUTO_SENTINELS:
+        if not entity_id.startswith("media_player."):
+            return {"ok": False, "error": "entity must be media_player.* or empty/auto"}
+    else:
+        entity_id = ""
+
+    options = load_options()
+    options["media_player"] = entity_id
+    write_options_file(options)
+    try:
+        supervisor_set_options(options)
+    except Exception as err:  # noqa: BLE001
+        print(f"warning: supervisor options sync failed: {err}", flush=True)
+
+    resolved = resolve_target()
+    return {
+        "ok": True,
+        "configured": entity_id,
+        "message": "已保存（空=自动识别）"
+        if not entity_id
+        else f"已保存: {entity_id}",
+        "resolved_entity_id": resolved.get("entity_id"),
+        "friendly_name": resolved.get("friendly_name"),
+        "error": None if resolved.get("ok") else resolved.get("error"),
+    }
+
+
 def resolve_target() -> Dict[str, Any]:
     mp = _load_media_players()
     options = mp.load_options()
@@ -74,6 +158,7 @@ def resolve_target() -> Dict[str, Any]:
         "airplay_name": str(options.get("airplay_name") or ""),
         "stream_format": str(options.get("stream_format") or "mp3"),
         "media_content_type": str(options.get("media_content_type") or "music"),
+        "configured": str(options.get("media_player") or "").strip(),
     }
 
 
@@ -115,7 +200,7 @@ def ensure_sample_mp3() -> None:
         "mp3",
         SAMPLE_PATH,
     ]
-    print(f"Generating sample audio: {' '.join(cmd)}", flush=True)
+    print(f"generating sample audio: {' '.join(cmd)}", flush=True)
     subprocess.run(cmd, check=True, timeout=60)
 
 
@@ -242,6 +327,7 @@ def start_test() -> Dict[str, Any]:
             "testing": True,
             "entity_id": entity_id,
             "friendly_name": target.get("friendly_name"),
+            "configured": target.get("configured"),
             "stream_url": stream_url,
             "message": "Sample audio play_media sent",
         }
@@ -284,12 +370,16 @@ def status() -> Dict[str, Any]:
     target = resolve_target()
     state = read_state()
     testing = bool(state.get("testing"))
+    players = list_players()
     result: Dict[str, Any] = {
         "ok": True,
         "testing": testing,
         "stream_url": state.get("stream_url"),
         "ui_port": UI_PORT,
         "test_port": TEST_PORT,
+        "configured": players.get("configured") or "",
+        "selected": players.get("selected") or "",
+        "players": players.get("players") or [],
     }
     if target.get("ok"):
         result.update(
@@ -312,7 +402,7 @@ HTML = """<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>XiaoAir Test</title>
+  <title>XiaoAir</title>
   <style>
     :root {
       --bg: #111318;
@@ -334,7 +424,7 @@ HTML = """<!doctype html>
       padding: 24px;
     }
     .card {
-      max-width: 520px;
+      max-width: 560px;
       margin: 0 auto;
       background: var(--card);
       border: 1px solid var(--border);
@@ -342,8 +432,18 @@ HTML = """<!doctype html>
       padding: 20px 22px;
     }
     h1 { font-size: 1.25rem; margin: 0 0 6px; }
-    p { color: var(--muted); margin: 0 0 16px; line-height: 1.45; font-size: 0.95rem; }
-    .row { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; }
+    p { color: var(--muted); margin: 0 0 14px; line-height: 1.45; font-size: 0.95rem; }
+    label { display: block; font-size: 0.9rem; margin-bottom: 6px; color: var(--muted); }
+    select {
+      width: 100%;
+      background: #0d0f14;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 0.95rem;
+    }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0; }
     button {
       border: 0;
       border-radius: 8px;
@@ -355,6 +455,7 @@ HTML = """<!doctype html>
     button:disabled { opacity: 0.45; cursor: not-allowed; }
     .start { background: var(--accent); }
     .stop { background: var(--danger); }
+    .save { background: #5c6bc0; }
     .meta {
       font-family: ui-monospace, Consolas, monospace;
       font-size: 0.82rem;
@@ -372,27 +473,60 @@ HTML = """<!doctype html>
 </head>
 <body>
   <div class="card">
-    <h1>XiaoAir 播放测试</h1>
-    <p>向当前目标 media_player 发送示例音频（约 12 秒 880Hz 提示音），用于验证 play_media / HTTP 拉流。</p>
+    <h1>XiaoAir</h1>
+    <p>选择目标音箱，并可用示例音频测试 <code>play_media</code>。留空选项为自动识别（优先小爱）。</p>
+    <label for="player">目标 media_player</label>
+    <select id="player"></select>
     <div class="row">
+      <button class="save" id="btnSave" onclick="savePlayer()">保存</button>
       <button class="start" id="btnStart" onclick="startTest()">开始测试</button>
       <button class="stop" id="btnStop" onclick="stopTest()">停止测试</button>
     </div>
     <div class="meta" id="status">加载中…</div>
   </div>
   <script>
-    async function api(path, method) {
-      const res = await fetch(path, { method: method || 'GET' });
+    let lastPlayers = [];
+    async function api(path, method, body) {
+      const opts = { method: method || 'GET', headers: {} };
+      if (body !== undefined) {
+        opts.headers['Content-Type'] = 'application/json';
+        opts.body = JSON.stringify(body);
+      }
+      const res = await fetch(path, opts);
       const data = await res.json().catch(() => ({}));
       if (!res.ok && !data.error) data.error = 'HTTP ' + res.status;
       return data;
     }
+    function fillSelect(data) {
+      const sel = document.getElementById('player');
+      const current = (data.selected != null ? data.selected : data.configured) || '';
+      const players = data.players || lastPlayers || [];
+      lastPlayers = players;
+      const keep = sel.value;
+      sel.innerHTML = '';
+      const auto = document.createElement('option');
+      auto.value = '';
+      auto.textContent = '自动识别（推荐）';
+      sel.appendChild(auto);
+      for (const p of players) {
+        const opt = document.createElement('option');
+        opt.value = p.entity_id;
+        const mark = (p.score || 0) >= 100 ? ' ★' : '';
+        opt.textContent = (p.friendly_name || p.entity_id) + ' — ' + p.entity_id + ' [' + p.state + ']' + mark;
+        sel.appendChild(opt);
+      }
+      const prefer = keep || current || '';
+      if ([...sel.options].some(o => o.value === prefer)) sel.value = prefer;
+      else sel.value = '';
+    }
     function render(data) {
+      fillSelect(data);
       const el = document.getElementById('status');
       const lines = [];
       if (data.error) lines.push('错误: ' + data.error);
       if (data.message) lines.push(data.message);
-      lines.push('目标: ' + (data.entity_id || '-'));
+      lines.push('配置: ' + (data.configured || data.selected || '(自动)'));
+      lines.push('实际目标: ' + (data.entity_id || data.resolved_entity_id || '-'));
       if (data.friendly_name) lines.push('名称: ' + data.friendly_name);
       if (data.airplay_name) lines.push('AirPlay: ' + data.airplay_name);
       lines.push('状态: ' + (data.testing ? '测试播放中' : '空闲'));
@@ -400,11 +534,22 @@ HTML = """<!doctype html>
       el.textContent = lines.join('\\n');
       el.className = 'meta ' + (data.error ? 'err' : 'ok');
       document.getElementById('btnStart').disabled = !!data.testing;
-      document.getElementById('btnStop').disabled = !data.testing && !data.entity_id;
+      document.getElementById('btnStop').disabled = !data.testing;
     }
     async function refresh() { render(await api('./api/status')); }
+    async function savePlayer() {
+      document.getElementById('btnSave').disabled = true;
+      try {
+        const entity_id = document.getElementById('player').value;
+        render(await api('./api/player', 'POST', { entity_id }));
+      } finally {
+        document.getElementById('btnSave').disabled = false;
+      }
+    }
     async function startTest() {
       document.getElementById('btnStart').disabled = true;
+      // Save current dropdown selection before testing.
+      await api('./api/player', 'POST', { entity_id: document.getElementById('player').value });
       render(await api('./api/test/start', 'POST'));
     }
     async function stopTest() {
@@ -412,7 +557,7 @@ HTML = """<!doctype html>
       render(await api('./api/test/stop', 'POST'));
     }
     refresh();
-    setInterval(refresh, 4000);
+    setInterval(refresh, 5000);
   </script>
 </body>
 </html>
@@ -423,8 +568,19 @@ class UIHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"[ui] {self.address_string()} {fmt % args}", flush=True)
 
+    def _read_json(self) -> Dict[str, Any]:
+        length = int(self.headers.get("Content-Length") or "0")
+        if length <= 0:
+            return {}
+        raw = self.rfile.read(length)
+        try:
+            data = json.loads(raw.decode("utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:  # noqa: BLE001
+            return {}
+
     def _send_json(self, code: int, payload: Dict[str, Any]) -> None:
-        body = json.dumps(payload).encode("utf-8")
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -449,17 +605,30 @@ class UIHandler(BaseHTTPRequestHandler):
         if path.endswith("/api/status") or path == "/api/status":
             self._send_json(200, status())
             return
+        if path.endswith("/api/players") or path == "/api/players":
+            self._send_json(200, list_players())
+            return
         self.send_error(404)
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path.rstrip("/")
         try:
+            if path.endswith("/api/player") or path == "/api/player":
+                body = self._read_json()
+                result = save_media_player(str(body.get("entity_id") or ""))
+                # Include player list so UI can refresh in one shot.
+                result.update({k: v for k, v in list_players().items() if k != "ok"})
+                result["testing"] = bool(read_state().get("testing"))
+                self._send_json(200 if result.get("ok") else 400, result)
+                return
             if path.endswith("/api/test/start") or path == "/api/test/start":
                 result = start_test()
+                result.update({k: v for k, v in list_players().items() if k != "ok"})
                 self._send_json(200 if result.get("ok") else 400, result)
                 return
             if path.endswith("/api/test/stop") or path == "/api/test/stop":
                 result = stop_test()
+                result.update({k: v for k, v in list_players().items() if k != "ok"})
                 self._send_json(200 if result.get("ok") else 400, result)
                 return
         except Exception as err:  # noqa: BLE001

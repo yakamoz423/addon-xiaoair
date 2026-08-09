@@ -164,6 +164,26 @@ def auto_pick_media_player() -> Optional[str]:
     return entity_id
 
 
+def list_media_player_choices() -> List[Dict[str, Any]]:
+    """Return ranked media_player choices for UI dropdowns."""
+    choices: List[Dict[str, Any]] = []
+    for state in discover_media_players():
+        entity_id = str(state.get("entity_id") or "")
+        attributes = (
+            state.get("attributes") if isinstance(state.get("attributes"), dict) else {}
+        )
+        score, _ = score_media_player(state)
+        choices.append(
+            {
+                "entity_id": entity_id,
+                "friendly_name": attributes.get("friendly_name") or entity_id,
+                "state": state.get("state") or "unknown",
+                "score": score,
+            }
+        )
+    return choices
+
+
 def configured_entity_id(options: Dict[str, Any]) -> str:
     entity_id = str(options.get("media_player") or "").strip()
 
