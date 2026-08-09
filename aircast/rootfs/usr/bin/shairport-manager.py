@@ -272,8 +272,7 @@ def load_players() -> List[Dict[str, Any]]:
         return []
 
 
-def ensure_avahi() -> None:
-    """Best-effort: use host Avahi via D-Bus, else start a local daemon."""
+def _avahi_on_dbus() -> tuple[bool, str]:
     check = [
         "dbus-send",
         "--system",
@@ -285,35 +284,65 @@ def ensure_avahi() -> None:
     try:
         proc = subprocess.run(check, capture_output=True, text=True, timeout=5)
         if proc.returncode == 0:
-            print("✓ Avahi available on system D-Bus")
-            return
-        print(f"Avahi not on D-Bus yet (rc={proc.returncode}): {proc.stderr.strip()}")
+            return True, (proc.stdout or "").strip()
+        return False, (proc.stderr or proc.stdout or "").strip()
     except Exception as err:  # noqa: BLE001
-        print(f"Avahi D-Bus check failed: {err}")
+        return False, str(err)
 
-    print("Trying to start local dbus/avahi...")
-    os.makedirs("/run/dbus", exist_ok=True)
+
+def ensure_avahi() -> None:
+    """Use existing system D-Bus (host_dbus); start only avahi-daemon if needed."""
+    ok, detail = _avahi_on_dbus()
+    if ok:
+        print("✓ Avahi available on system D-Bus")
+        return
+    print(f"Avahi not on D-Bus yet: {detail}")
+
+    # With host_dbus, /run/dbus/system_bus_socket already exists. Starting a
+    # second dbus-daemon fails with "Address already in use". Only start Avahi.
     os.makedirs("/var/run/avahi-daemon", exist_ok=True)
-    for cmd in (
-        ["dbus-daemon", "--system", "--fork"],
-        ["avahi-daemon", "--daemonize", "--no-drop-root", "--no-rlimits"],
-    ):
-        try:
-            subprocess.run(cmd, check=False, timeout=10)
-        except Exception as err:  # noqa: BLE001
-            print(f"Warning: {' '.join(cmd)} failed: {err}")
-    time.sleep(1)
+    print("Starting avahi-daemon on existing system D-Bus...")
     try:
-        proc = subprocess.run(check, capture_output=True, text=True, timeout=5)
-        if proc.returncode == 0:
-            print("✓ Local Avahi is up")
-        else:
+        subprocess.run(
+            ["avahi-daemon", "-c"],
+            check=False,
+            capture_output=True,
+            timeout=5,
+        )
+        # -k kills if already running; ignore failure
+        subprocess.run(
+            ["avahi-daemon", "-k"],
+            check=False,
+            capture_output=True,
+            timeout=5,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        proc = subprocess.run(
+            ["avahi-daemon", "--daemonize", "--no-drop-root", "--no-rlimits"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode != 0:
             print(
-                "✗ Avahi still unavailable — Shairport-Sync will likely exit. "
-                f"{proc.stderr.strip()}"
+                f"Warning: avahi-daemon start rc={proc.returncode}: "
+                f"{(proc.stderr or proc.stdout or '').strip()}"
             )
     except Exception as err:  # noqa: BLE001
-        print(f"✗ Avahi re-check failed: {err}")
+        print(f"Warning: avahi-daemon start failed: {err}")
+
+    time.sleep(1.5)
+    ok, detail = _avahi_on_dbus()
+    if ok:
+        print("✓ Avahi started on system D-Bus")
+    else:
+        print(
+            "✗ Avahi still unavailable — Shairport-Sync may exit. "
+            f"{detail}"
+        )
 
 
 def main() -> None:

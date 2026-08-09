@@ -22,6 +22,10 @@ RUN \
         python3-requests \
         ffmpeg \
         shairport-sync \
+        libconfig11 \
+        libpopt0 \
+        libsoxr0 \
+        libssl3 \
         libnss-mdns \
         libavahi-client3 \
         avahi-daemon \
@@ -51,6 +55,8 @@ RUN \
     && chmod a+x /etc/s6-overlay/s6-rc.d/xiaoair-ui/finish \
     \
     && shairport-sync -V \
+    && ldd "$(command -v shairport-sync)" \
+    && test -e /usr/lib/*/libconfig.so.11 -o -e /lib/*/libconfig.so.11 \
     \
     && apt-get purge -y --auto-remove unzip \
     && rm -fr \
