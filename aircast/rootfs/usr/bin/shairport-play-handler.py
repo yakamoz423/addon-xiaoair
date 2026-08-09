@@ -30,7 +30,8 @@ OPTIONS_FILE = "/data/options.json"
 ENV_FILE = "/tmp/xiaoair-env.json"
 PLAY_LOG = "/tmp/xiaoair-play.log"
 STREAM_PORT_BASE = 7000
-AUDIO_READY_BYTES = 8192
+DEFAULT_AUDIO_READY_BYTES = 1024
+DEFAULT_HTTP_PREROLL_BYTES = 4096
 
 
 def log(msg: str) -> None:
@@ -54,6 +55,14 @@ def load_json(path: str) -> Dict[str, Any]:
 
 def load_options() -> Dict[str, Any]:
     return load_json(OPTIONS_FILE)
+
+
+def option_int(options: Dict[str, Any], key: str, default: int) -> int:
+    try:
+        value = int(options.get(key, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
 
 
 def supervisor_token() -> Optional[str]:
@@ -161,11 +170,14 @@ def stop_serve(entity_id: str) -> None:
 class Fanout:
     """Broadcast ffmpeg chunks; keep short preroll for late subscribers."""
 
-    def __init__(self, entity_id: str) -> None:
+    def __init__(
+        self, entity_id: str, ready_bytes: int, preroll_max: int
+    ) -> None:
         self._lock = threading.Lock()
         self._clients: List[Queue] = []
         self._preroll = bytearray()
-        self._preroll_max = 65536
+        self._preroll_max = max(1024, preroll_max)
+        self._ready_bytes = max(1, ready_bytes)
         self._bytes = 0
         self._entity_id = entity_id
         self.audio_ready = threading.Event()
@@ -192,7 +204,9 @@ class Fanout:
             if len(self._preroll) > self._preroll_max:
                 del self._preroll[: len(self._preroll) - self._preroll_max]
             self._bytes += len(data)
-            ready_now = self._bytes >= AUDIO_READY_BYTES and not self.audio_ready.is_set()
+            ready_now = (
+                self._bytes >= self._ready_bytes and not self.audio_ready.is_set()
+            )
             clients = list(self._clients)
         if ready_now:
             self.audio_ready.set()
@@ -226,14 +240,21 @@ class ReusableHTTPServer(ThreadingHTTPServer):
 def run_serve(entity_id: str, pipe_path: str, port_offset: int) -> None:
     options = load_options()
     stream_format = str(options.get("stream_format") or "mp3").lower()
+    ready_bytes = option_int(
+        options, "audio_ready_bytes", DEFAULT_AUDIO_READY_BYTES
+    )
+    preroll_max = option_int(
+        options, "http_preroll_bytes", DEFAULT_HTTP_PREROLL_BYTES
+    )
     port = STREAM_PORT_BASE + port_offset
     stream_path = "/live.mp3" if stream_format == "mp3" else "/live.wav"
     content_type = "audio/mpeg" if stream_format == "mp3" else "audio/wav"
-    fanout = Fanout(entity_id)
+    fanout = Fanout(entity_id, ready_bytes=ready_bytes, preroll_max=preroll_max)
 
     if stream_format == "wav":
         ffmpeg_cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "warning",
+            "-fflags", "nobuffer", "-flags", "low_delay",
             "-f", "s16le", "-ar", "44100", "-ac", "2", "-i", pipe_path,
             "-f", "wav", "pipe:1",
         ]
@@ -245,7 +266,10 @@ def run_serve(entity_id: str, pipe_path: str, port_offset: int) -> None:
             "-f", "mp3", "-b:a", "192k", "pipe:1",
         ]
 
-    log(f"serve start entity={entity_id} port={port} pipe={pipe_path}")
+    log(
+        f"serve start entity={entity_id} port={port} pipe={pipe_path} "
+        f"ready_bytes={ready_bytes} preroll={preroll_max}"
+    )
     log(f"ffmpeg: {' '.join(ffmpeg_cmd)}")
 
     ffmpeg = subprocess.Popen(
@@ -420,7 +444,6 @@ def auto_play_media(entity_id: str) -> None:
         stream_name = "live.mp3" if stream_format == "mp3" else "live.wav"
         stream_url = f"http://{get_local_ip()}:{port}/{stream_name}"
         media_content_type = str(state.get("media_content_type") or "music")
-        time.sleep(0.15)
         if play_media(entity_id, stream_url, media_content_type):
             state["play_media_sent"] = True
             state["stream_url"] = stream_url

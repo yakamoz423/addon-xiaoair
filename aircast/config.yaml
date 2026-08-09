@@ -1,6 +1,6 @@
 ---
 name: XiaoAir
-version: "0.1.19"
+version: "0.1.20"
 slug: xiaoair
 description: AirPlay bridge to Home Assistant media_player entities (e.g. XiaoAI).
 url: https://github.com/yakamoz423/addon-xiaoair
@@ -27,6 +27,11 @@ options:
   airplay_name: XiaoAir
   media_content_type: music
   stream_format: mp3
+  latency_offset_seconds: -2.0
+  backend_buffer_seconds: 0.05
+  silent_lead_in_seconds: 0.0
+  audio_ready_bytes: 1024
+  http_preroll_bytes: 4096
 schema:
   log_level: list(trace|debug|info|notice|warning|error|fatal)?
   address: str?
@@ -38,3 +43,8 @@ schema:
   airplay_name: str
   media_content_type: str
   stream_format: list(mp3|wav)
+  latency_offset_seconds: float
+  backend_buffer_seconds: float
+  silent_lead_in_seconds: float
+  audio_ready_bytes: int
+  http_preroll_bytes: int
