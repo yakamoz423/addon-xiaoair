@@ -8,13 +8,13 @@ configuration:
     description: AirCast / 桥接服务绑定的 IP（通常可留空）。
   latency_rtp:
     name: RTP 延迟
-    description: AirConnect 的 RTP 音频缓冲（毫秒），不影响 media_player 桥接。
+    description: AirPlay RTP 音频缓冲（毫秒）。
   latency_http:
     name: HTTP 延迟
-    description: AirConnect 的 HTTP 音频缓冲（毫秒），不影响 media_player 桥接。
+    description: HTTP 音频缓冲（毫秒）。
   drift:
     name: 允许漂移
-    description: AirConnect 允许时间基准漂移（减少爆音）。
+    description: 允许时间基准漂移（减少爆音）。
   media_bridge_enabled:
     name: 启用 media_player 桥接
     description: >-
@@ -32,22 +32,4 @@ configuration:
     description: 传给 media_player.play_media 的类型（通常为 music）。
   stream_format:
     name: 推流格式
-    description: HTTP 流格式。小爱建议 mp3；wav 可能略低延迟。
-  latency_offset_seconds:
-    name: 延迟偏移（秒）
-    description: >-
-      原样写入 Shairport 的 audio_backend_latency_offset_in_seconds。
-      默认 -2.0 用于抵消 iOS AirPlay 约 2 秒协商延迟，尽快输出 PCM。
-      若出现断续，可往 0 回调（如 -1.5、-1.0）。
-  backend_buffer_seconds:
-    name: 后端缓冲（秒）
-    description: Shairport pipe 缓冲。越小延迟越低，过小可能欠载断续。
-  silent_lead_in_seconds:
-    name: 起播静音垫（秒）
-    description: 播放开始前垫的静音时长。设为 0 可减少起播等待。
-  audio_ready_bytes:
-    name: 起播字节阈值
-    description: 编码流累计达到该字节数后立即调用 play_media（越小起播越快）。
-  http_preroll_bytes:
-    name: HTTP preroll 字节
-    description: 新 HTTP 客户端加入直播流时最多补发的 preroll 长度。
+    description: HTTP 流格式。小爱音箱建议使用 mp3。

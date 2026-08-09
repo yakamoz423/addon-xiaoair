@@ -12,15 +12,15 @@ configuration:
   latency_rtp:
     name: RTP Latency
     description: >-
-      RTP audio buffer in milliseconds for AirConnect (not the media_player bridge).
+      RTP audio buffer in milliseconds for AirPlay.
   latency_http:
     name: HTTP Latency
     description: >-
-      HTTP audio buffer in milliseconds for AirConnect (not the media_player bridge).
+      HTTP audio buffer in milliseconds.
   drift:
     name: Drift
     description: >-
-      Allow timing reference drift (no click) for AirConnect.
+      Allow timing reference drift (no click).
   media_bridge_enabled:
     name: Enable media_player bridge
     description: >-
@@ -31,6 +31,7 @@ configuration:
     description: >-
       Optional. Leave empty to auto-pick (prefers XiaoAI / Xiaomi speakers).
       Or set a media_player.* entity id, e.g. media_player.xiaoai_l05c.
+
   airplay_name:
     name: AirPlay name
     description: >-
@@ -42,26 +43,4 @@ configuration:
   stream_format:
     name: Stream format
     description: >-
-      HTTP stream format. Use mp3 for XiaoAI; wav may be slightly lower latency.
-  latency_offset_seconds:
-    name: Latency offset (seconds)
-    description: >-
-      Passed directly to Shairport audio_backend_latency_offset_in_seconds.
-      Default -2.0 cancels the typical iOS AirPlay ~2s negotiated delay so
-      PCM is emitted ASAP. If audio stutters, raise toward 0 (e.g. -1.5, -1.0).
-  backend_buffer_seconds:
-    name: Backend buffer (seconds)
-    description: >-
-      Shairport pipe buffer size. Smaller is lower latency; too small may underrun.
-  silent_lead_in_seconds:
-    name: Silent lead-in (seconds)
-    description: >-
-      Silence padded before playback starts. Use 0 for minimum start delay.
-  audio_ready_bytes:
-    name: Audio ready bytes
-    description: >-
-      Call play_media after this many encoded stream bytes (lower = sooner start).
-  http_preroll_bytes:
-    name: HTTP preroll bytes
-    description: >-
-      Max preroll kept for new HTTP clients joining the live stream.
+      HTTP stream format. Use mp3 for XiaoAI.

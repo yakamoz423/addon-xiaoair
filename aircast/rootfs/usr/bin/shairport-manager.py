@@ -73,19 +73,6 @@ class ShairportSyncManager:
 
         # Keep PCM at full scale; phone volume keys drive XiaoAI via HA.
         ignore_vol = "yes"
-        # Default -2.0 cancels typical iOS ~2s negotiated AirPlay latency.
-        latency_offset = float(self.config.get("latency_offset_seconds", -2.0))
-        backend_buffer = float(self.config.get("backend_buffer_seconds", 0.05))
-        silent_lead_in = float(self.config.get("silent_lead_in_seconds", 0.0))
-        print(
-            f"latency_offset_seconds={latency_offset} → "
-            f"Shairport audio_backend_latency_offset_in_seconds={latency_offset}"
-        )
-        print(
-            f"backend_buffer_seconds={backend_buffer}, "
-            f"silent_lead_in_seconds={silent_lead_in}"
-        )
-
         config_content = f"""
 general = {{
     name = "{player_name}";
@@ -94,9 +81,6 @@ general = {{
     port = {5000 + port_offset};
     interpolation = "soxr";
     ignore_volume_control = "{ignore_vol}";
-    audio_backend_latency_offset_in_seconds = {latency_offset};
-    audio_backend_buffer_desired_length_in_seconds = {backend_buffer};
-    audio_backend_silent_lead_in_time = {silent_lead_in};
     run_this_when_volume_is_set = "{volume_cmd}";
 }};
 
