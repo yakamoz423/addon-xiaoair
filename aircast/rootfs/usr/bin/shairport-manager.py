@@ -44,6 +44,10 @@ class ShairportSyncManager:
             f"start {entity_id} {pipe_path} {port_offset} "
             f">>/tmp/xiaoair-play.log 2>&1"
         )
+        play_cmd = (
+            f"/usr/bin/python3 /usr/bin/shairport-play-handler.py "
+            f"play {entity_id} >>/tmp/xiaoair-play.log 2>&1"
+        )
         stop_cmd = (
             f"/usr/bin/python3 /usr/bin/shairport-play-handler.py "
             f"stop {entity_id} >>/tmp/xiaoair-play.log 2>&1"
@@ -73,9 +77,10 @@ general = {{
 sessioncontrol = {{
     session_timeout = 20;
     allow_session_interruption = "yes";
+    // 1) start HTTP/ffmpeg  2) AirPlay audio fills pipe  3) play_media to XiaoAI
     run_this_before_play_begins = "{start_cmd}";
+    run_this_after_play_begins = "{play_cmd}";
     run_this_after_play_ends = "{stop_cmd}";
-    // Wait until HTTP stream + play_media are ready before audio hits the pipe.
     wait_for_completion = "yes";
 }};
 

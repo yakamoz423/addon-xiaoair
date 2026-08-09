@@ -4,6 +4,11 @@ Shairport play/stop hooks.
 
 Starts a reconnectable HTTP MP3 stream from the Shairport pipe and calls
 media_player.play_media on the configured Home Assistant entity.
+
+Timing (important for XiaoAI):
+  before_play_begins -> start HTTP/ffmpeg (no play_media yet)
+  after_play_begins  -> wait until audio bytes flow, then play_media
+  after_play_ends    -> soft-stop speaker + tear down stream
 """
 from __future__ import annotations
 
@@ -17,7 +22,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import Empty, Queue
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
@@ -25,6 +30,7 @@ OPTIONS_FILE = "/data/options.json"
 ENV_FILE = "/tmp/xiaoair-env.json"
 PLAY_LOG = "/tmp/xiaoair-play.log"
 STREAM_PORT_BASE = 7000
+AUDIO_READY_BYTES = 8192
 
 
 def log(msg: str) -> None:
@@ -79,6 +85,17 @@ def pid_path(entity_id: str) -> str:
     return f"/tmp/shairport_serve_{entity_id.replace('.', '_')}.pid"
 
 
+def audio_ready_path(entity_id: str) -> str:
+    return f"/tmp/shairport_audio_ready_{entity_id.replace('.', '_')}"
+
+
+def ha_headers() -> Dict[str, str]:
+    return {
+        "Authorization": f"Bearer {supervisor_token()}",
+        "Content-Type": "application/json",
+    }
+
+
 def wait_for_port(port: int, timeout: float = 8.0) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -90,6 +107,20 @@ def wait_for_port(port: int, timeout: float = 8.0) -> bool:
     return False
 
 
+def wait_port_free(port: int, timeout: float = 5.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("0.0.0.0", port))
+            sock.close()
+            return
+        except OSError:
+            sock.close()
+            time.sleep(0.1)
+
+
 def kill_pid(pid: int) -> None:
     try:
         os.killpg(pid, signal.SIGTERM)
@@ -98,34 +129,55 @@ def kill_pid(pid: int) -> None:
             os.kill(pid, signal.SIGTERM)
         except Exception:  # noqa: BLE001
             pass
+    time.sleep(0.2)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except Exception:  # noqa: BLE001
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def stop_serve(entity_id: str) -> None:
     path = pid_path(entity_id)
-    if not os.path.exists(path):
-        return
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                pid = int(handle.read().strip())
+            kill_pid(pid)
+        except Exception as err:  # noqa: BLE001
+            log(f"stop_serve kill failed: {err}")
+        try:
+            os.remove(path)
+        except OSError:
+            pass
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            pid = int(handle.read().strip())
-        kill_pid(pid)
-    except Exception as err:  # noqa: BLE001
-        log(f"stop_serve kill failed: {err}")
-    try:
-        os.remove(path)
+        os.remove(audio_ready_path(entity_id))
     except OSError:
         pass
 
 
 class Fanout:
-    """Broadcast ffmpeg chunks to all connected HTTP clients."""
+    """Broadcast ffmpeg chunks; keep short preroll for late subscribers."""
 
-    def __init__(self) -> None:
+    def __init__(self, entity_id: str) -> None:
         self._lock = threading.Lock()
         self._clients: List[Queue] = []
+        self._preroll = bytearray()
+        self._preroll_max = 65536
+        self._bytes = 0
+        self._entity_id = entity_id
+        self.audio_ready = threading.Event()
 
     def subscribe(self) -> Queue:
         queue: Queue = Queue(maxsize=64)
         with self._lock:
+            if self._preroll:
+                try:
+                    queue.put_nowait(bytes(self._preroll))
+                except Exception:  # noqa: BLE001
+                    pass
             self._clients.append(queue)
         return queue
 
@@ -136,17 +188,33 @@ class Fanout:
 
     def publish(self, data: bytes) -> None:
         with self._lock:
+            self._preroll.extend(data)
+            if len(self._preroll) > self._preroll_max:
+                del self._preroll[: len(self._preroll) - self._preroll_max]
+            self._bytes += len(data)
+            ready_now = self._bytes >= AUDIO_READY_BYTES and not self.audio_ready.is_set()
             clients = list(self._clients)
+        if ready_now:
+            self.audio_ready.set()
+            try:
+                with open(audio_ready_path(self._entity_id), "w", encoding="utf-8") as handle:
+                    handle.write(str(self._bytes))
+            except OSError:
+                pass
         for queue in clients:
             try:
                 queue.put_nowait(data)
             except Exception:  # noqa: BLE001
-                # Drop for slow clients rather than blocking encode.
                 try:
                     _ = queue.get_nowait()
                     queue.put_nowait(data)
                 except Exception:  # noqa: BLE001
                     pass
+
+
+class ReusableHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
 
 
 def run_serve(entity_id: str, pipe_path: str, port_offset: int) -> None:
@@ -155,45 +223,20 @@ def run_serve(entity_id: str, pipe_path: str, port_offset: int) -> None:
     port = STREAM_PORT_BASE + port_offset
     stream_path = "/live.mp3" if stream_format == "mp3" else "/live.wav"
     content_type = "audio/mpeg" if stream_format == "mp3" else "audio/wav"
-    fanout = Fanout()
+    fanout = Fanout(entity_id)
 
     if stream_format == "wav":
         ffmpeg_cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "warning",
-            "-f",
-            "s16le",
-            "-ar",
-            "44100",
-            "-ac",
-            "2",
-            "-i",
-            pipe_path,
-            "-f",
-            "wav",
-            "pipe:1",
+            "ffmpeg", "-hide_banner", "-loglevel", "warning",
+            "-f", "s16le", "-ar", "44100", "-ac", "2", "-i", pipe_path,
+            "-f", "wav", "pipe:1",
         ]
     else:
         ffmpeg_cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "warning",
-            "-f",
-            "s16le",
-            "-ar",
-            "44100",
-            "-ac",
-            "2",
-            "-i",
-            pipe_path,
-            "-f",
-            "mp3",
-            "-b:a",
-            "192k",
-            "pipe:1",
+            "ffmpeg", "-hide_banner", "-loglevel", "warning",
+            "-fflags", "nobuffer", "-flags", "low_delay",
+            "-f", "s16le", "-ar", "44100", "-ac", "2", "-i", pipe_path,
+            "-f", "mp3", "-b:a", "192k", "pipe:1",
         ]
 
     log(f"serve start entity={entity_id} port={port} pipe={pipe_path}")
@@ -216,7 +259,7 @@ def run_serve(entity_id: str, pipe_path: str, port_offset: int) -> None:
     def pump_stdout() -> None:
         assert ffmpeg.stdout is not None
         while True:
-            chunk = ffmpeg.stdout.read(4096)
+            chunk = ffmpeg.stdout.read(2048)
             if not chunk:
                 break
             fanout.publish(chunk)
@@ -226,6 +269,8 @@ def run_serve(entity_id: str, pipe_path: str, port_offset: int) -> None:
     threading.Thread(target=pump_stdout, daemon=True).start()
 
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
         def log_message(self, fmt: str, *args: Any) -> None:
             log(f"http: {self.address_string()} {fmt % args}")
 
@@ -234,13 +279,21 @@ def run_serve(entity_id: str, pipe_path: str, port_offset: int) -> None:
                 self.send_error(404)
                 return
             queue = fanout.subscribe()
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Pragma", "no-cache")
-            self.send_header("Connection", "close")
-            self.end_headers()
             try:
+                # Wait for real audio before headers — XiaoAI drops empty streams.
+                try:
+                    first = queue.get(timeout=20)
+                except Empty:
+                    log("http: no audio yet — closing client without headers")
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(first)
+                self.wfile.flush()
                 while True:
                     try:
                         data = queue.get(timeout=60)
@@ -260,7 +313,17 @@ def run_serve(entity_id: str, pipe_path: str, port_offset: int) -> None:
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
 
-    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    wait_port_free(port)
+    try:
+        server = ReusableHTTPServer(("0.0.0.0", port), Handler)
+    except OSError as err:
+        log(f"✗ bind :{port} failed: {err}")
+        try:
+            os.killpg(ffmpeg.pid, signal.SIGTERM)
+        except Exception:  # noqa: BLE001
+            pass
+        return
+
     log(f"HTTP listening on 0.0.0.0:{port}{stream_path}")
 
     def shutdown(*_args: Any) -> None:
@@ -291,66 +354,71 @@ def run_serve(entity_id: str, pipe_path: str, port_offset: int) -> None:
             os.remove(pid_path(entity_id))
         except OSError:
             pass
+        try:
+            os.remove(audio_ready_path(entity_id))
+        except OSError:
+            pass
 
 
-def play_media(entity_id: str, stream_url: str, media_content_type: str) -> bool:
+def call_service(service: str, payload: Dict[str, Any]) -> Tuple[bool, str]:
     token = supervisor_token()
     if not token:
-        log("✗ SUPERVISOR_TOKEN missing — cannot call play_media")
-        return False
-    payload = {
-        "entity_id": entity_id,
-        "media_content_id": stream_url,
-        "media_content_type": media_content_type,
-    }
-    log(f"play_media {entity_id} <- {stream_url}")
+        return False, "SUPERVISOR_TOKEN missing"
     try:
         response = requests.post(
-            "http://supervisor/core/api/services/media_player/play_media",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
+            f"http://supervisor/core/api/services/{service}",
+            headers=ha_headers(),
             json=payload,
             timeout=10,
         )
-        response.raise_for_status()
-        log(f"✓ play_media accepted ({response.status_code})")
-        return True
+        if response.status_code >= 400:
+            return False, f"{response.status_code} {response.text[:200]}"
+        return True, str(response.status_code)
     except Exception as err:  # noqa: BLE001
-        log(f"✗ play_media failed: {err}")
-        return False
+        return False, str(err)
+
+
+def play_media(entity_id: str, stream_url: str, media_content_type: str) -> bool:
+    log(f"play_media {entity_id} <- {stream_url}")
+    ok, detail = call_service(
+        "media_player/play_media",
+        {
+            "entity_id": entity_id,
+            "media_content_id": stream_url,
+            "media_content_type": media_content_type,
+        },
+    )
+    if ok:
+        log(f"✓ play_media accepted ({detail})")
+    else:
+        log(f"✗ play_media failed: {detail}")
+    return ok
 
 
 def stop_media(entity_id: str) -> bool:
-    token = supervisor_token()
-    if not token:
-        log("✗ SUPERVISOR_TOKEN missing — cannot call media_stop")
-        return False
-    try:
-        response = requests.post(
-            "http://supervisor/core/api/services/media_player/media_stop",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            json={"entity_id": entity_id},
-            timeout=10,
-        )
-        response.raise_for_status()
-        log(f"✓ media_stop accepted for {entity_id}")
-        return True
-    except Exception as err:  # noqa: BLE001
-        log(f"✗ media_stop failed: {err}")
-        return False
+    """Xiaomi MIOT often rejects media_stop — try several services."""
+    payload = {"entity_id": entity_id}
+    attempts = (
+        "media_player/media_stop",
+        "media_player/media_pause",
+        "media_player/turn_off",
+    )
+    for service in attempts:
+        ok, detail = call_service(service, payload)
+        if ok:
+            log(f"✓ stop via {service} ({detail})")
+            return True
+        log(f"stop via {service} failed: {detail}")
+    log("⚠ could not stop media_player (ignored)")
+    return False
 
 
 def handle_start(entity_id: str, pipe_path: str, port_offset: str) -> None:
+    """before_play_begins: bring up HTTP/ffmpeg only."""
     offset = int(port_offset)
     port = STREAM_PORT_BASE + offset
     options = load_options()
     stream_format = str(options.get("stream_format") or "mp3").lower()
-    media_content_type = str(options.get("media_content_type") or "music")
     stream_name = "live.mp3" if stream_format == "mp3" else "live.wav"
     stream_url = f"http://{get_local_ip()}:{port}/{stream_name}"
 
@@ -358,7 +426,7 @@ def handle_start(entity_id: str, pipe_path: str, port_offset: str) -> None:
     log(f"pipe={pipe_path} url={stream_url} token={'yes' if supervisor_token() else 'no'}")
 
     stop_serve(entity_id)
-    time.sleep(0.2)
+    wait_port_free(port)
 
     proc = subprocess.Popen(
         [
@@ -380,10 +448,6 @@ def handle_start(entity_id: str, pipe_path: str, port_offset: str) -> None:
         log(f"✗ HTTP port {port} did not open in time")
         return
 
-    # Give ffmpeg a moment to attach to the FIFO before XiaoAI connects.
-    time.sleep(0.3)
-    play_media(entity_id, stream_url, media_content_type)
-
     with open(state_path(entity_id), "w", encoding="utf-8") as handle:
         json.dump(
             {
@@ -392,17 +456,47 @@ def handle_start(entity_id: str, pipe_path: str, port_offset: str) -> None:
                 "port": offset,
                 "stream_url": stream_url,
                 "serve_pid": proc.pid,
+                "media_content_type": str(
+                    options.get("media_content_type") or "music"
+                ),
             },
             handle,
         )
+    log("✓ stream server ready (waiting for AirPlay audio before play_media)")
+
+
+def handle_play(entity_id: str) -> None:
+    """after_play_begins: audio is flowing into the pipe — tell XiaoAI to pull."""
+    path = state_path(entity_id)
+    state = load_json(path)
+    if not state:
+        log(f"✗ play: missing state for {entity_id}")
+        return
+
+    stream_url = str(state.get("stream_url") or "")
+    media_content_type = str(state.get("media_content_type") or "music")
+    ready = audio_ready_path(entity_id)
+    log("Waiting for encoded audio before play_media...")
+    deadline = time.time() + 12.0
+    while time.time() < deadline:
+        if os.path.exists(ready):
+            break
+        time.sleep(0.1)
+    else:
+        log("⚠ audio ready timeout — calling play_media anyway")
+
+    # Tiny settle so preroll has a few MP3 frames.
+    time.sleep(0.2)
+    play_media(entity_id, stream_url, media_content_type)
 
 
 def handle_stop(entity_id: str) -> None:
     log(f"Playback stopping for {entity_id}")
     path = state_path(entity_id)
     try:
-        stop_serve(entity_id)
+        # Stop speaker first while URL is still briefly valid, then tear down.
         stop_media(entity_id)
+        stop_serve(entity_id)
         if os.path.exists(path):
             os.remove(path)
     except Exception as err:  # noqa: BLE001
@@ -412,7 +506,8 @@ def handle_stop(entity_id: str) -> None:
 def main() -> None:
     if len(sys.argv) < 3:
         print(
-            "Usage: shairport-play-handler.py <start|stop|serve> <entity_id> [pipe_path] [port]",
+            "Usage: shairport-play-handler.py <start|play|stop|serve> "
+            "<entity_id> [pipe_path] [port]",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -425,6 +520,8 @@ def main() -> None:
             log("start command requires pipe_path and port")
             sys.exit(1)
         handle_start(entity_id, sys.argv[3], sys.argv[4])
+    elif command == "play":
+        handle_play(entity_id)
     elif command == "stop":
         handle_stop(entity_id)
     elif command == "serve":
