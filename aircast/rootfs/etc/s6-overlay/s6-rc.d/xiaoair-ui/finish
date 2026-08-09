@@ -1,0 +1,8 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# XiaoAir UI crashed — keep add-on running
+# ==============================================================================
+readonly exit_code_service="${1}"
+bashio::log.warning "XiaoAir UI exited with code ${exit_code_service}"
+exit 0

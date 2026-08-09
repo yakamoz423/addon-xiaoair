@@ -68,6 +68,9 @@ RUN \
     && chmod a+x /usr/bin/esphome-airplay-bridge.py \
     && chmod a+x /usr/bin/shairport-manager.py \
     && chmod a+x /usr/bin/shairport-play-handler.py \
+    && chmod a+x /usr/bin/xiaoair-ui.py \
+    && chmod a+x /etc/s6-overlay/s6-rc.d/xiaoair-ui/run \
+    && chmod a+x /etc/s6-overlay/s6-rc.d/xiaoair-ui/finish \
     \
     && apt-get purge -y --auto-remove \
         unzip \

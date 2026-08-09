@@ -1,0 +1,8 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# XiaoAir ingress UI (sample playback test controls)
+# ==============================================================================
+
+bashio::log.info 'Starting XiaoAir test UI on port 8099...'
+exec /usr/bin/python3 /usr/bin/xiaoair-ui.py

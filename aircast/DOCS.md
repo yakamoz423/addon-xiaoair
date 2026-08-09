@@ -9,12 +9,18 @@ XiaoAI). Also keeps the original Chromecast AirCast path from AirConnect.
 AirPlay → Shairport-Sync → FFmpeg HTTP stream → media_player.play_media → entity
 ```
 
+## Test UI
+
+Configuration schema cannot host action buttons. Use the add-on **Ingress Web UI**
+instead: **Start test** generates a short MP3 beep and calls
+`media_player.play_media`; **Stop test** calls `media_player.media_stop`.
+
 ## Configuration
 
 ```yaml
 log_level: info
 media_bridge_enabled: true
-media_player: media_player.xiaoai_l05c
+# media_player: media_player.xiaoai_l05c   # optional; empty = auto
 airplay_name: XiaoAI AirPlay
 media_content_type: music
 stream_format: mp3
