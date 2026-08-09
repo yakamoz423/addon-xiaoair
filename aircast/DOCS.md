@@ -26,7 +26,9 @@ Enable/disable the Shairport → `media_player` bridge.
 
 ### Option: `media_player`
 
-Home Assistant `media_player.*` entity (UI entity picker).
+Optional Home Assistant `media_player.*` entity id. Leave empty (or `auto`) to
+auto-pick at startup; XiaoAI / Xiaomi speakers are preferred. HA App config UI
+cannot render a live entity dropdown (schema has no `entity(...)` type).
 
 ### Option: `airplay_name`
 

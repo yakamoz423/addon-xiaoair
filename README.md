@@ -1,9 +1,9 @@
 # XiaoAir — AirPlay to Home Assistant `media_player`
 
 Fork of [addon-aircastESP](https://github.com/DeveshwarH1996/addon-aircastESP) /
-[app-aircast](https://github.com/hassio-addons/app-aircast), modified so you can
-pick any Home Assistant `media_player` (e.g. Xiaomi XiaoAI via MIOT) in the
-add-on UI and receive AirPlay on it.
+[app-aircast](https://github.com/hassio-addons/app-aircast), modified so AirPlay
+can target any Home Assistant `media_player` (e.g. Xiaomi XiaoAI via MIOT).
+Leave the target blank to auto-pick (prefers XiaoAI / Xiaomi speakers).
 
 ## How it works
 
@@ -34,7 +34,7 @@ First build compiles Shairport-Sync and may take a while.
 
 ```yaml
 media_bridge_enabled: true
-media_player: media_player.your_xiaoai
+# media_player: media_player.your_xiaoai   # optional; empty = auto
 airplay_name: Living Room XiaoAI
 media_content_type: music
 stream_format: mp3
@@ -42,7 +42,8 @@ stream_format: mp3
 
 In the UI:
 
-- **Target media player**: entity picker (same as Developer Tools → `media_player.play_media`)
+- **Target media player**: leave empty for auto-detect, or type a `media_player.*` id  
+  (HA App schema has no entity dropdown; only `str` / fixed `list(...)`)
 - **AirPlay name**: name advertised to Apple devices
 - **media_content_type**: usually `music`
 - **stream_format**: `mp3` recommended for XiaoAI
@@ -51,10 +52,10 @@ Chromecast / original AirCast options (`latency_*`, `drift`, `address`) remain a
 
 ## Usage
 
-1. Set at least one `media_player` under **players**
+1. Leave **Target media player** empty (auto) or set a `media_player.*` entity
 2. Start the add-on
 3. On iPhone/Mac, pick the AirPlay target named by `airplay_name` / friendly name
-4. Check add-on logs for `play_media` / stream URL
+4. Check add-on logs for auto-selected entity / `play_media` / stream URL
 
 ## Notes
 

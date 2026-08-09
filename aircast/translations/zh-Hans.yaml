@@ -1,0 +1,35 @@
+---
+configuration:
+  log_level:
+    name: 日志级别
+    description: 控制插件日志详细程度。
+  address:
+    name: 绑定地址
+    description: AirCast / 桥接服务绑定的 IP（通常可留空）。
+  latency_rtp:
+    name: RTP 延迟
+    description: AirPlay RTP 音频缓冲（毫秒）。
+  latency_http:
+    name: HTTP 延迟
+    description: HTTP 音频缓冲（毫秒）。
+  drift:
+    name: 允许漂移
+    description: 允许时间基准漂移（减少爆音）。
+  media_bridge_enabled:
+    name: 启用 media_player 桥接
+    description: >-
+      创建 AirPlay 接收端，并在开始播放时调用 media_player.play_media。
+  media_player:
+    name: 目标媒体播放器
+    description: >-
+      可选。留空则自动选择（优先小爱 / 小米音箱）。
+      也可手动填写 media_player.* 实体 ID。
+  airplay_name:
+    name: AirPlay 名称
+    description: 在 iPhone / Mac 的 AirPlay 列表里显示的名称。
+  media_content_type:
+    name: media_content_type
+    description: 传给 media_player.play_media 的类型（通常为 music）。
+  stream_format:
+    name: 推流格式
+    description: HTTP 流格式。小爱音箱建议使用 mp3。

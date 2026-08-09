@@ -29,8 +29,9 @@ configuration:
   media_player:
     name: Target media player
     description: >-
-      Entity ID string, e.g. media_player.xiaoai_l05c (same as
-      media_player.play_media target).
+      Optional. Leave empty to auto-pick (prefers XiaoAI / Xiaomi speakers).
+      Or set a media_player.* entity id, e.g. media_player.xiaoai_l05c.
+
   airplay_name:
     name: AirPlay name
     description: >-
