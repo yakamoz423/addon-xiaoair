@@ -460,81 +460,109 @@ def snapshot_pre_volume(entity_id: str) -> Optional[Dict[str, Any]]:
     return snap
 
 
-def set_ha_volume(entity_id: str, level: float, muted: bool) -> Tuple[bool, str]:
-    if muted:
-        ok, detail = call_service(
-            "media_player/volume_mute",
-            {"entity_id": entity_id, "is_volume_muted": True},
-        )
-        if ok:
-            return True, f"volume_mute ({detail})"
-        log(f"volume_mute failed: {detail}; falling back to volume_set 0")
-        level = 0.0
-
+def set_ha_volume_level(entity_id: str, level: float) -> Tuple[bool, str]:
+    """Same service iPhone volume keys use: media_player.volume_set."""
     ok, detail = call_service(
         "media_player/volume_set",
         {"entity_id": entity_id, "volume_level": level},
     )
+    if ok:
+        return True, f"volume_set {level:.3f} ({detail})"
+    return False, detail
+
+
+def set_ha_mute(entity_id: str, muted: bool) -> Tuple[bool, str]:
+    ok, detail = call_service(
+        "media_player/volume_mute",
+        {"entity_id": entity_id, "is_volume_muted": muted},
+    )
+    if ok:
+        return True, f"volume_mute={muted} ({detail})"
+    return False, detail
+
+
+def set_ha_volume(entity_id: str, level: float, muted: bool) -> Tuple[bool, str]:
+    """Live AirPlay volume keys. Mute-only when the phone sends mute."""
+    if muted:
+        ok, detail = set_ha_mute(entity_id, True)
+        if ok:
+            return True, detail
+        log(f"volume_mute failed: {detail}; falling back to volume_set 0")
+        level = 0.0
+
+    ok, detail = set_ha_volume_level(entity_id, level)
     if not ok:
         return False, detail
     if not muted and level > 0:
-        call_service(
-            "media_player/volume_mute",
-            {"entity_id": entity_id, "is_volume_muted": False},
-        )
-    return True, f"volume_set {level:.3f} ({detail})"
+        set_ha_mute(entity_id, False)
+    return True, detail
 
 
-def restore_pre_volume(entity_id: str) -> None:
+def restore_pre_volume(entity_id: str, *, reason: str, clear: bool) -> bool:
+    """Restore via volume_set (not mute-only). XiaoAI ignores mute as a volume change."""
     if not restore_volume_enabled():
-        clear_volume_snapshot(entity_id)
-        return
+        if clear:
+            clear_volume_snapshot(entity_id)
+        return False
     snap = load_volume_snapshot(entity_id)
     if snap is None:
-        log("no pre-connect volume to restore")
-        return
+        log(f"no pre-connect volume to restore ({reason})")
+        return False
 
     try:
         level = float(snap["volume_level"])
     except (TypeError, ValueError, KeyError):
         log(f"✗ bad pre-connect volume snapshot: {snap!r}")
-        clear_volume_snapshot(entity_id)
-        return
-    muted = bool(snap.get("is_volume_muted"))
-    log(f"restoring pre-connect volume={level:.3f} muted={muted}")
+        if clear:
+            clear_volume_snapshot(entity_id)
+        return False
 
-    # XiaoAI may apply a default volume asynchronously after media_stop.
-    delays = (0.25, 0.5, 0.7, 0.7)
+    snap_muted = bool(snap.get("is_volume_muted"))
+    # Xiaomi MIOT often reports is_volume_muted=True while idle even at 20%.
+    # Restoring that flag previously skipped volume_set entirely.
+    restore_mute = snap_muted and level <= 0.001
+    log(
+        f"restoring pre-connect volume={level:.3f} "
+        f"snap_muted={snap_muted} apply_mute={restore_mute} ({reason})"
+    )
+
+    delays = (0.05, 0.4, 0.7, 0.7) if reason != "before-stop" else (0.05, 0.35)
     restored = False
     last_detail = ""
     for delay in delays:
-        time.sleep(delay)
-        ok, last_detail = set_ha_volume(entity_id, level, muted)
+        if delay:
+            time.sleep(delay)
+        ok, last_detail = set_ha_volume_level(entity_id, level)
+        log(f"restore[{reason}] {last_detail if ok else 'failed: ' + last_detail}")
         if not ok:
-            log(f"restore volume_set failed: {last_detail}")
             continue
+        if restore_mute:
+            mute_ok, mute_detail = set_ha_mute(entity_id, True)
+            log(f"restore[{reason}] {mute_detail if mute_ok else 'mute failed: ' + mute_detail}")
+        else:
+            mute_ok, mute_detail = set_ha_mute(entity_id, False)
+            if not mute_ok:
+                log(f"restore[{reason}] unmute skipped/failed: {mute_detail}")
+
         current = volume_from_ha_state(ha_get_state(entity_id))
         if current is None:
             restored = True
             break
-        level_ok = abs(current["volume_level"] - level) <= 0.03
-        if muted:
-            muted_ok = bool(current["is_volume_muted"])
-        else:
-            muted_ok = not bool(current["is_volume_muted"])
-        if level_ok and muted_ok:
+        if abs(current["volume_level"] - level) <= 0.03:
             restored = True
             break
         log(
-            f"restore not settled yet ha={current['volume_level']:.3f} "
+            f"restore[{reason}] not settled yet ha={current['volume_level']:.3f} "
             f"muted={current['is_volume_muted']}; retrying"
         )
 
     if restored:
-        log(f"✓ restored pre-connect volume={level:.3f} muted={muted} ({last_detail})")
+        log(f"✓ restored pre-connect volume={level:.3f} ({reason}) ({last_detail})")
     else:
-        log(f"⚠ restore volume gave up at {level:.3f} muted={muted} ({last_detail})")
-    clear_volume_snapshot(entity_id)
+        log(f"⚠ restore volume not confirmed at {level:.3f} ({reason}) ({last_detail})")
+    if clear:
+        clear_volume_snapshot(entity_id)
+    return restored
 
 
 def call_service(service: str, payload: Dict[str, Any]) -> Tuple[bool, str]:
@@ -689,16 +717,18 @@ def handle_stop(entity_id: str) -> None:
     log(f"Playback stopping for {entity_id}")
     path = state_path(entity_id)
     try:
-        # Stop speaker first while URL is still briefly valid, then tear down.
+        # volume_set while still playing — same path iPhone keys use.
+        # media_pause first made XiaoAI keep the AirPlay volume.
+        restore_pre_volume(entity_id, reason="before-stop", clear=False)
         stop_media(entity_id)
-        restore_pre_volume(entity_id)
+        restore_pre_volume(entity_id, reason="after-stop", clear=True)
         stop_serve(entity_id)
         if os.path.exists(path):
             os.remove(path)
     except Exception as err:  # noqa: BLE001
         log(f"✗ Error in stop handler: {err}")
         try:
-            restore_pre_volume(entity_id)
+            restore_pre_volume(entity_id, reason="stop-error", clear=True)
         except Exception:  # noqa: BLE001
             pass
 
