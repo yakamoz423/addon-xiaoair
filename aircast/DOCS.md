@@ -54,9 +54,9 @@ Passed to `media_player.play_media` (default `music`).
 ### Option: `restore_volume_on_disconnect`
 
 When enabled (default), XiaoAir reads the target `media_player` volume
-before AirPlay audio starts, then restores that level (and mute state)
-after the session ends. Phone volume keys still change the speaker during
-playback; disconnect puts the previous volume back.
+before AirPlay audio starts, then sets that level once after pause on
+disconnect. Mute is never changed. Phone volume keys still change the
+speaker during playback.
 
 ### Chromecast options
 

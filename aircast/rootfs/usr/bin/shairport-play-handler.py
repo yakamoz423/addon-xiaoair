@@ -397,7 +397,7 @@ def ha_get_state(entity_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def volume_from_ha_state(state: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def volume_from_ha_state(state: Optional[Dict[str, Any]]) -> Optional[float]:
     if not state:
         return None
     attrs = state.get("attributes") or {}
@@ -412,11 +412,7 @@ def volume_from_ha_state(state: Optional[Dict[str, Any]]) -> Optional[Dict[str, 
         level = 0.0
     if level > 1.0:
         level = 1.0
-    muted = attrs.get("is_volume_muted")
-    return {
-        "volume_level": level,
-        "is_volume_muted": bool(muted) if muted is not None else False,
-    }
+    return level
 
 
 def load_volume_snapshot(entity_id: str) -> Optional[Dict[str, Any]]:
@@ -441,27 +437,27 @@ def clear_volume_snapshot(entity_id: str) -> None:
         pass
 
 
-def snapshot_pre_volume(entity_id: str) -> Optional[Dict[str, Any]]:
+def snapshot_pre_volume(entity_id: str) -> Optional[float]:
     """Remember speaker volume once per AirPlay session, before iPhone overrides it."""
     if not restore_volume_enabled():
         return None
     existing = load_volume_snapshot(entity_id)
     if existing is not None:
-        return existing
-    snap = volume_from_ha_state(ha_get_state(entity_id))
-    if snap is None:
+        try:
+            return float(existing["volume_level"])
+        except (TypeError, ValueError, KeyError):
+            pass
+    level = volume_from_ha_state(ha_get_state(entity_id))
+    if level is None:
         log(f"volume snapshot skipped (no volume_level on {entity_id})")
         return None
-    save_volume_snapshot(entity_id, snap)
-    log(
-        f"saved pre-connect volume={snap['volume_level']:.3f} "
-        f"muted={snap['is_volume_muted']}"
-    )
-    return snap
+    save_volume_snapshot(entity_id, {"volume_level": level})
+    log(f"saved pre-connect volume={level:.3f}")
+    return level
 
 
-def set_ha_volume_level(entity_id: str, level: float) -> Tuple[bool, str]:
-    """Same service iPhone volume keys use: media_player.volume_set."""
+def set_ha_volume(entity_id: str, level: float) -> Tuple[bool, str]:
+    """media_player.volume_set only — never touch mute."""
     ok, detail = call_service(
         "media_player/volume_set",
         {"entity_id": entity_id, "volume_level": level},
@@ -471,98 +467,29 @@ def set_ha_volume_level(entity_id: str, level: float) -> Tuple[bool, str]:
     return False, detail
 
 
-def set_ha_mute(entity_id: str, muted: bool) -> Tuple[bool, str]:
-    ok, detail = call_service(
-        "media_player/volume_mute",
-        {"entity_id": entity_id, "is_volume_muted": muted},
-    )
-    if ok:
-        return True, f"volume_mute={muted} ({detail})"
-    return False, detail
-
-
-def set_ha_volume(entity_id: str, level: float, muted: bool) -> Tuple[bool, str]:
-    """Live AirPlay volume keys. Mute-only when the phone sends mute."""
-    if muted:
-        ok, detail = set_ha_mute(entity_id, True)
-        if ok:
-            return True, detail
-        log(f"volume_mute failed: {detail}; falling back to volume_set 0")
-        level = 0.0
-
-    ok, detail = set_ha_volume_level(entity_id, level)
-    if not ok:
-        return False, detail
-    if not muted and level > 0:
-        set_ha_mute(entity_id, False)
-    return True, detail
-
-
-def restore_pre_volume(entity_id: str, *, reason: str, clear: bool) -> bool:
-    """Restore via volume_set (not mute-only). XiaoAI ignores mute as a volume change."""
+def restore_pre_volume(entity_id: str) -> None:
+    """One volume_set after pause. Do not change mute."""
     if not restore_volume_enabled():
-        if clear:
-            clear_volume_snapshot(entity_id)
-        return False
+        clear_volume_snapshot(entity_id)
+        return
     snap = load_volume_snapshot(entity_id)
     if snap is None:
-        log(f"no pre-connect volume to restore ({reason})")
-        return False
-
+        log("no pre-connect volume to restore")
+        return
     try:
         level = float(snap["volume_level"])
     except (TypeError, ValueError, KeyError):
         log(f"✗ bad pre-connect volume snapshot: {snap!r}")
-        if clear:
-            clear_volume_snapshot(entity_id)
-        return False
-
-    snap_muted = bool(snap.get("is_volume_muted"))
-    # Xiaomi MIOT often reports is_volume_muted=True while idle even at 20%.
-    # Restoring that flag previously skipped volume_set entirely.
-    restore_mute = snap_muted and level <= 0.001
-    log(
-        f"restoring pre-connect volume={level:.3f} "
-        f"snap_muted={snap_muted} apply_mute={restore_mute} ({reason})"
-    )
-
-    delays = (0.05, 0.4, 0.7, 0.7) if reason != "before-stop" else (0.05, 0.35)
-    restored = False
-    last_detail = ""
-    for delay in delays:
-        if delay:
-            time.sleep(delay)
-        ok, last_detail = set_ha_volume_level(entity_id, level)
-        log(f"restore[{reason}] {last_detail if ok else 'failed: ' + last_detail}")
-        if not ok:
-            continue
-        if restore_mute:
-            mute_ok, mute_detail = set_ha_mute(entity_id, True)
-            log(f"restore[{reason}] {mute_detail if mute_ok else 'mute failed: ' + mute_detail}")
-        else:
-            mute_ok, mute_detail = set_ha_mute(entity_id, False)
-            if not mute_ok:
-                log(f"restore[{reason}] unmute skipped/failed: {mute_detail}")
-
-        current = volume_from_ha_state(ha_get_state(entity_id))
-        if current is None:
-            restored = True
-            break
-        if abs(current["volume_level"] - level) <= 0.03:
-            restored = True
-            break
-        log(
-            f"restore[{reason}] not settled yet ha={current['volume_level']:.3f} "
-            f"muted={current['is_volume_muted']}; retrying"
-        )
-
-    if restored:
-        log(f"✓ restored pre-connect volume={level:.3f} ({reason}) ({last_detail})")
-    else:
-        log(f"⚠ restore volume not confirmed at {level:.3f} ({reason}) ({last_detail})")
-    if clear:
         clear_volume_snapshot(entity_id)
-    return restored
+        return
+
+    log(f"restoring pre-connect volume={level:.3f}")
+    ok, detail = set_ha_volume(entity_id, level)
+    if ok:
+        log(f"✓ {detail}")
+    else:
+        log(f"✗ restore {detail}")
+    clear_volume_snapshot(entity_id)
 
 
 def call_service(service: str, payload: Dict[str, Any]) -> Tuple[bool, str]:
@@ -717,37 +644,33 @@ def handle_stop(entity_id: str) -> None:
     log(f"Playback stopping for {entity_id}")
     path = state_path(entity_id)
     try:
-        # volume_set while still playing — same path iPhone keys use.
-        # media_pause first made XiaoAI keep the AirPlay volume.
-        restore_pre_volume(entity_id, reason="before-stop", clear=False)
         stop_media(entity_id)
-        restore_pre_volume(entity_id, reason="after-stop", clear=True)
+        restore_pre_volume(entity_id)
         stop_serve(entity_id)
         if os.path.exists(path):
             os.remove(path)
     except Exception as err:  # noqa: BLE001
         log(f"✗ Error in stop handler: {err}")
         try:
-            restore_pre_volume(entity_id, reason="stop-error", clear=True)
+            restore_pre_volume(entity_id)
         except Exception:  # noqa: BLE001
             pass
 
 
-def airplay_volume_to_ha(airplay_db: float) -> Tuple[bool, float]:
-    """Map AirPlay dB (0..-30, -144 mute) -> (muted, volume 0..1)."""
+def airplay_volume_to_ha(airplay_db: float) -> float:
+    """Map AirPlay dB (0..-30, -144 as 0) -> volume 0..1. Mute is not used."""
     if airplay_db <= -100:
-        return True, 0.0
-    # Clamp to AirPlay attenuator range.
+        return 0.0
     level = (airplay_db + 30.0) / 30.0
     if level < 0.0:
         level = 0.0
     if level > 1.0:
         level = 1.0
-    return False, level
+    return level
 
 
 def handle_volume(entity_id: str, airplay_db_raw: str) -> None:
-    """Forward iPhone volume keys to XiaoAI (PCM stays full-scale)."""
+    """Forward iPhone volume keys via volume_set only (PCM stays full-scale)."""
     try:
         airplay_db = float(airplay_db_raw)
     except ValueError:
@@ -757,10 +680,10 @@ def handle_volume(entity_id: str, airplay_db_raw: str) -> None:
     # Volume may arrive before before_play_begins — snapshot first.
     snapshot_pre_volume(entity_id)
 
-    muted, level = airplay_volume_to_ha(airplay_db)
-    log(f"volume airplay={airplay_db} dB -> ha={level:.3f} muted={muted}")
+    level = airplay_volume_to_ha(airplay_db)
+    log(f"volume airplay={airplay_db} dB -> ha={level:.3f}")
 
-    ok, detail = set_ha_volume(entity_id, level, muted)
+    ok, detail = set_ha_volume(entity_id, level)
     if ok:
         log(f"✓ {detail}")
     else:
