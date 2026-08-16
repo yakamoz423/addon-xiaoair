@@ -39,6 +39,7 @@ media_bridge_enabled: true
 airplay_name: Living Room XiaoAI
 media_content_type: music
 stream_format: mp3
+restore_volume_on_disconnect: true
 ```
 
 In the UI:
@@ -48,6 +49,7 @@ In the UI:
 - **AirPlay name**: name advertised to Apple devices
 - **media_content_type**: usually `music`
 - **stream_format**: `mp3` recommended for XiaoAI
+- **restore_volume_on_disconnect**: restore speaker volume after AirPlay ends (default on)
 
 Chromecast / original AirCast options (`latency_*`, `drift`, `address`) remain available.
 
@@ -65,6 +67,7 @@ Chromecast / original AirCast options (`latency_*`, `drift`, `address`) remain a
 - Use the Home Assistant host LAN IP (add-on uses `host_network`)
 - `ffmpeg -listen` serves one client; reconnects may restart the stream process
 - Latency of several seconds is expected
+- After AirPlay disconnect, speaker volume is restored to the pre-connect level (`restore_volume_on_disconnect`)
 
 ## License
 

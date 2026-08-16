@@ -25,6 +25,7 @@ media_bridge_enabled: true
 airplay_name: XiaoAI AirPlay
 media_content_type: music
 stream_format: mp3
+restore_volume_on_disconnect: true
 ```
 
 ### Option: `media_bridge_enabled`
@@ -49,6 +50,13 @@ Passed to `media_player.play_media` (default `music`).
 
 - `mp3` — recommended for XiaoAI
 - `wav` — alternative for players that prefer WAV
+
+### Option: `restore_volume_on_disconnect`
+
+When enabled (default), XiaoAir reads the target `media_player` volume
+before AirPlay audio starts, then restores that level (and mute state)
+after the session ends. Phone volume keys still change the speaker during
+playback; disconnect puts the previous volume back.
 
 ### Chromecast options
 

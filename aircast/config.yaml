@@ -1,6 +1,6 @@
 ---
 name: XiaoAir
-version: "0.1.19"
+version: "0.1.20"
 slug: xiaoair
 description: AirPlay bridge to Home Assistant media_player entities (e.g. XiaoAI).
 url: https://github.com/yakamoz423/xiaoair
@@ -27,6 +27,7 @@ options:
   airplay_name: XiaoAir
   media_content_type: music
   stream_format: mp3
+  restore_volume_on_disconnect: true
 schema:
   log_level: list(trace|debug|info|notice|warning|error|fatal)?
   address: str?
@@ -38,3 +39,4 @@ schema:
   airplay_name: str
   media_content_type: str
   stream_format: list(mp3|wav)
+  restore_volume_on_disconnect: bool

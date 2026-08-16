@@ -33,3 +33,8 @@ configuration:
   stream_format:
     name: 推流格式
     description: HTTP 流格式。小爱音箱建议使用 mp3。
+  restore_volume_on_disconnect:
+    name: 断连后恢复连接前音量
+    description: >-
+      AirPlay 连接时记下音箱音量，会话结束后自动设回去。
+      播放过程中手机音量键仍会控制音箱。

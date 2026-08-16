@@ -44,3 +44,9 @@ configuration:
     name: Stream format
     description: >-
       HTTP stream format. Use mp3 for XiaoAI.
+  restore_volume_on_disconnect:
+    name: Restore volume after disconnect
+    description: >-
+      Save the speaker volume when AirPlay connects, then restore it
+      after the session ends. iPhone volume keys still control the
+      speaker during playback.
